@@ -1,0 +1,8 @@
+flask
+flask-cors
+requests
+selenium
+Pillow
+colorama
+numpy
+flask-compress
