@@ -433,12 +433,36 @@ class QuantumBrain:
         """AI Feedback Loop to adjust future projections (Titan 9.2 NSS)"""
         self.last_prediction_was_correct = was_correct
         
-        # ========================================================
+        # [AI-LEARN v1] Update method scores berdasarkan hasil
+        _snap = getattr(self, "_last_engine_snapshot", {})
+        if _snap and "final_side_key" in _snap:
+            _final_key = _snap["final_side_key"]
+            _winner_dir = 1 if _final_key == "B" else -1
+            for _m_name, _m_vote in _snap.items():
+                if _m_name in ("final_side_key", "phase"):
+                    continue
+                if _m_name not in self.method_scores:
+                    continue
+                _method_aligned = (_m_vote == _winner_dir)
+                if was_correct and _method_aligned:
+                    self.method_scores[_m_name]["win"] += 1
+                elif not was_correct and _method_aligned:
+                    self.method_scores[_m_name]["lose"] += 1
+            
+            _phase = _snap.get("phase", "UNKNOWN")
+            if _phase in self.regime_best and was_correct:
+                if _final_key not in self.regime_best[_phase]:
+                    self.regime_best[_phase].append(_final_key)
+                    self.regime_best[_phase] = self.regime_best[_phase][-20:]
+        
+        _total_fb = sum(m["win"] + m["lose"] for m in self.method_scores.values())
+        if _total_fb > 0 and _total_fb % 10 == 0:
+            self._recalculate_method_weights()
+            self._save_learned_memory()
+        
         # [v38] FINAL PACKAGE HOOKS
-        # ========================================================
         _snap_rf = getattr(self, "_last_engine_snapshot", {})
         
-        # 1. Regime-aware method performance tracker
         if _snap_rf and "phase" in _snap_rf:
             _ph = _snap_rf["phase"]
             if _ph not in self.regime_method_perf:
@@ -456,7 +480,6 @@ class QuantumBrain:
                     else:
                         self.regime_method_perf[_ph][_mname]["lose"] += 1
         
-        # 2. Q-Learning reward
         _reward = 1.0 if was_correct else -1.0
         if is_jp and was_correct:
             _reward = 3.0
@@ -464,7 +487,6 @@ class QuantumBrain:
             self.q_last_action = _snap_rf.get("final_side_key", "B")
             self.q_learn_update(_reward)
         
-        # 3. Auto-tune tiap 25 feedback
         self._feedback_counter += 1
         if self._feedback_counter % 25 == 0:
             try:
@@ -476,85 +498,44 @@ class QuantumBrain:
                 self._log(f"[v38 AUTOTUNE] Error: {_at_e}")
         
         if is_jp and was_correct:
-        
-        # [AI-LEARN v1] Update method scores berdasarkan hasil
-        _snap = getattr(self, "_last_engine_snapshot", {})
-        if _snap and "final_side_key" in _snap:
-            _final_key = _snap["final_side_key"]  # 'B' atau 'K'
-            _winner_dir = 1 if _final_key == "B" else -1
-            for _m_name, _m_vote in _snap.items():
-                if _m_name in ("final_side_key", "phase"):
-                    continue
-                if _m_name not in self.method_scores:
-                    continue
-                # Method "setuju" dengan final = cek apakah vote searah dengan hasil
-                _method_aligned = (_m_vote == _winner_dir)
-                if was_correct and _method_aligned:
-                    self.method_scores[_m_name]["win"] += 1
-                elif not was_correct and _method_aligned:
-                    # Method setuju tapi hasilnya salah = method itu salah
-                    self.method_scores[_m_name]["lose"] += 1
-                # Kalau method tidak setuju dengan final, tidak dihitung (abstain)
-            
-            # Simpan phase info untuk regime learning
-            _phase = _snap.get("phase", "UNKNOWN")
-            if _phase in self.regime_best and was_correct:
-                if _final_key not in self.regime_best[_phase]:
-                    self.regime_best[_phase].append(_final_key)
-                    self.regime_best[_phase] = self.regime_best[_phase][-20:]
-        
-        # Auto-adjust weight setiap 10 total feedback
-        _total_fb = sum(m["win"] + m["lose"] for m in self.method_scores.values())
-        if _total_fb > 0 and _total_fb % 10 == 0:
-            self._recalculate_method_weights()
-            self._save_learned_memory()
-        
-        if is_jp and was_correct:
             self.jp_resonance_count += 1
             self._log(f"JP_RESONANCE_HIT: Syncing Matrix | Count: {self.jp_resonance_count}")
         
         if not was_correct:
             self.loss_counter += 1
-            # Decay JP resonance count on loss so phase doesn't stay permanently hijacked in JP_HARMONY
             self.jp_resonance_count = max(0, self.jp_resonance_count - 3)
             cause, solution = self.analyze_failure(pred_bk=pred_bk, actual_bk=actual_bk)
             self.last_audit = {"status": "FAIL", "cause": cause, "solution": solution}
             
             # --- NSS LEARNING v6 (TITAN SLOT/WINGO HYPER-SYNCED - BLACK OPS) ---
             if cause == "STAGNAN_ATTRACTION":
-                # Stagnant attractor state: nurture momentum and damp reversion to prevent aggressive fighting
                 self.neural_weights["momentum"] = min(4.5, max(2.0, self.neural_weights.get("momentum", 1.0) * 1.50))
                 self.neural_weights["reversion"] = max(0.02, min(0.08, self.neural_weights.get("reversion", 1.0) * 0.30))
                 self.engine_performance["pattern"] = min(6.0, self.engine_performance.get("pattern", 1.0) * 1.60)
                 self.engine_performance["regress"] = max(0.1, self.engine_performance.get("regress", 1.0) * 0.30)
             elif cause == "POLA_2_2_DESYNC":
-                # Pola 2-2 Desync: prioritize pattern matching to follow doublet flips
                 self.neural_weights["pattern"] = min(5.0, max(2.5, self.neural_weights.get("pattern", 1.0) * 2.00))
                 self.neural_weights["momentum"] = min(2.5, max(1.0, self.neural_weights.get("momentum", 1.0) * 0.80))
                 self.engine_performance["pattern"] = min(6.0, self.engine_performance.get("pattern", 1.0) * 2.00)
             elif cause in ["PERGESERAN_POLARITAS", "SIDE_POLARITY_SHIFT"]:
-                # Polarity shifted: follow momentum of shift without runaway explosion
                 self.neural_weights["momentum"] = min(4.5, max(2.2, self.neural_weights.get("momentum", 1.0) * 1.60))
                 self.neural_weights["reversion"] = max(0.01, min(0.06, self.neural_weights.get("reversion", 1.0) * 0.25))
                 self.neural_weights["pattern"] = min(4.5, max(2.0, self.neural_weights.get("pattern", 1.0) * 1.40))
                 self.engine_performance["trend"] = min(7.0, self.engine_performance.get("trend", 1.0) * 1.80)
                 self.engine_performance["regress"] = max(0.1, self.engine_performance.get("regress", 1.0) * 0.25)
             elif cause in ["KEBOCORAN_DRAGON", "DRAGON_FRACTURE"]:
-                # Longitudinal naga trend detected: lock trend momentum
                 self.neural_weights["momentum"] = min(5.0, max(3.0, self.neural_weights.get("momentum", 1.0) * 2.00))
                 self.neural_weights["reversion"] = max(0.005, min(0.02, self.neural_weights.get("reversion", 1.0) * 0.10))
                 self.engine_performance["trend"] = min(8.0, self.engine_performance.get("trend", 1.0) * 2.20)
                 self.engine_performance["pattern"] = min(6.0, self.engine_performance.get("pattern", 1.0) * 1.80)
                 self.engine_performance["regress"] = max(0.05, self.engine_performance.get("regress", 1.0) * 0.10)
             elif cause == "GANGGUAN_POLA":
-                # High-noise pattern disruption: boost pattern matching and noise suppression
                 self.engine_performance["pattern"] = min(6.0, self.engine_performance.get("pattern", 1.0) * 1.80)
                 self.engine_performance["regress"] = max(0.2, self.engine_performance.get("regress", 1.0) * 0.50)
                 self.neural_weights["pattern"] = min(4.5, max(2.2, self.neural_weights.get("pattern", 1.0) * 1.60))
                 self.neural_weights["momentum"] = min(3.5, max(1.8, self.neural_weights.get("momentum", 1.0) * 1.30))
                 self.neural_weights["reversion"] = max(0.05, min(0.15, self.neural_weights.get("reversion", 1.0) * 0.40))
             elif "ENTROPI" in cause or cause == "ENTROPI_BERLEBIH":
-                # Volatilitas ekstrem (Entropy > 2.80): Balanced adaptation without runaway weight surge
                 self.engine_performance["trend"] = min(6.0, self.engine_performance.get("trend", 1.0) * 1.70)
                 self.engine_performance["pattern"] = min(5.0, self.engine_performance.get("pattern", 1.0) * 1.50)
                 self.engine_performance["regress"] = max(0.1, self.engine_performance.get("regress", 1.0) * 0.20)
@@ -568,7 +549,6 @@ class QuantumBrain:
             reason, mode = self.analyze_success()
             self.last_audit = {"status": "WIN", "cause": reason, "solution": mode}
             
-            # MODE-REINFORCEMENT: Strengthen the winning synapse
             if reason in ["KOREKSI_FTQC", "VQE_EIGEN_STATE"]:
                 self.engine_performance["regress"] *= 1.35
                 self.neural_weights["reversion"] *= 1.25
@@ -588,16 +568,13 @@ class QuantumBrain:
                 self.engine_performance["regress"] *= 1.40
                 self.neural_weights["jp_sync"] = min(4.0, self.neural_weights["jp_sync"] * 1.6)
                 
-            # Consistent performance recovery
             for k in self.engine_performance:
                 self.engine_performance[k] = min(3.5, self.engine_performance[k] * 1.15)
                 
-            # Smoothly decay weights back toward base 1.0 instead of a harsh hard reset
             if self.quantum_entropy < 1.0:
                 for k in self.neural_weights:
                     self.neural_weights[k] = self.neural_weights[k] * 0.85 + 1.0 * 0.15
             
-        # Standard safety bounds for neural weights to avoid blowout or lockout
         for k in self.neural_weights:
             self.neural_weights[k] = max(0.1, min(5.0, self.neural_weights[k]))
 
