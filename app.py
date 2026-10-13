@@ -1849,7 +1849,7 @@ class WingoMasterBrain:
             return {
                 "bk": used_choice,
                 "num": used_num,
-                "acc": round(max(accuracy, sec_pred["confidence"]), 2),
+                "acc": round(min(accuracy, sec_pred.get("confidence", accuracy)) * 0.9, 2),
                 "confidence": round(confidence, 2),
                 "entropy": round(self.quantum_entropy, 3),
                 "phase": self.market_mood,
