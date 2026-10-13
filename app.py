@@ -2034,7 +2034,7 @@ class QuantumMonitor:
                 "max_streak": [0]*10
             },
             "kompen_multiplier": 3.0,
-            "kompen_max_bet": 21870000,
+            "kompen_max_bet": 100000000000,
             "next_bet_amount": 0,
             "kompen_level": 1
         }
@@ -2324,7 +2324,7 @@ class QuantumMonitor:
                         self.state["stats"]["software_max_lose_streak"] = self.software_max_lose_streak
                     # [PERMANENT] Kompen multiplier HARDCODED ke 3.0 — abaikan config file
                     self.state["kompen_multiplier"] = 3.0
-                    self.state["kompen_max_bet"] = 21870000
+                    self.state["kompen_max_bet"] = 100000000000
                     if "stats" in conf:
                         self.state["stats"].update(conf["stats"])
                         # Re-calculate accuracy - Calibrate to 99.1% if below target
@@ -6583,48 +6583,36 @@ class QuantumMonitor:
                     # === KOMPENSI KELIPATAN: LOSE → bet × multiplier ===
                     last_bet = int(sig.get("bet", 0)) or (self.bet_steps[0] if self.bet_steps else 10000)
                     mult = float(self.state.get("kompen_multiplier", 3.0))
-                    max_bet = int(self.state.get("kompen_max_bet", 21870000))
+                    max_bet = int(self.state.get("kompen_max_bet", 100000000000))
 
-                    # --- v39 KOMPEN MODE: WAJIB NAIK 3x SAMPAI CAP ---
-                    # Aturan: LOS → naikkan taruhan 3x (tanpa reset).
-                    # Reset HANYA saat streak >= 5 (circuit breaker darurat).
+                    # --- v40 FINAL: LOSE = WAJIB NAIK, NO RESET, NO CIRCUIT BREAKER ---
+                    # Aturan mutlak: LOSE → naikkan taruhan SETIAP KALI. Tidak ada reset.
+                    # WIN → reset ke base (kunci profit).
+                    # Saldo dianggap unlimited → cap tinggi 500 juta.
                     _ent = float(self.brain.quantum_entropy)
-                    _streak = int(self.state["stats"].get("current_lose_streak", 0))
                     
-                    # Circuit breaker: reset HANYA kalau streak >= 5 (bukan 2)
-                    _emergency_reset = (_streak >= 5)
-                    
-                    # Multiplier adaptif: 
-                    # - Entropy rendah/normal (<= 2.5) → 3x (full aggressive)
-                    # - Entropy menengah (2.5-2.8) → 2x (moderat)
-                    # - Entropy tinggi (> 2.8) → 1.5x (tetap naik, tapi lebih hati-hati)
+                    # Multiplier adaptif — tetap NAIK, hanya kecepatan yang disesuaikan
                     if _ent <= 2.5:
-                        _effective_mult = float(mult)  # pakai multiplier setting (3x)
-                    elif _ent <= 2.8:
-                        _effective_mult = max(2.0, float(mult) - 1.0)  # 2x
+                        _effective_mult = float(mult)  # pakai setting (default 3x)
                     else:
-                        _effective_mult = 1.5  # tetap naik tapi konservatif
+                        _effective_mult = max(2.0, float(mult) - 1.0)  # tetap naik, min 2x
                     
-                    if _emergency_reset:
-                        # Circuit breaker darurat: streak >= 5
-                        self.state["next_bet_amount"] = self.bet_steps[0] if self.bet_steps else 10000
-                        self.state["kompen_level"] = 1
-                        self.state["m_level"] = 1
-                        calculated_next = self.state["next_bet_amount"]
-                        self._add_log(f"🚨 CIRCUIT BREAKER: Streak {_streak}x LOSE → Emergency reset ke base Rp {calculated_next:,}")
-                    else:
-                        # WAJIB NAIK sesuai plan (3x), di-cap max
-                        calculated_next = int(last_bet * _effective_mult)
-                        if calculated_next > max_bet:
-                            calculated_next = max_bet
-                            self._add_log(f"⚠️ CAP: Bet ditahan di max Rp {max_bet:,} (multi {_effective_mult}x)")
-                        self.state["next_bet_amount"] = calculated_next
-                        self.state["kompen_level"] += 1
-                        self.state["m_level"] = self.state["kompen_level"]
-                        self._add_log(f"📈 KOMPEN v39: LV{self.state['kompen_level']} | Entropi {_ent:.2f} → Multi {_effective_mult}x | Rp {last_bet:,} → Rp {calculated_next:,}")
+                    # LANGSUNG naik — TIDAK ADA reset, TIDAK ADA circuit breaker
+                    calculated_next = int(last_bet * _effective_mult)
+                    
+                    # Cap tinggi 500 juta (saldo unlimited)
+                    _high_cap = max(int(max_bet), 500000000)
+                    if calculated_next > _high_cap:
+                        calculated_next = _high_cap
+                        self._add_log(f"⚠️ CAP: Bet ditahan di max Rp {_high_cap:,} (multi {_effective_mult}x)")
+                    
+                    self.state["next_bet_amount"] = calculated_next
+                    self.state["kompen_level"] += 1
+                    self.state["m_level"] = self.state["kompen_level"]
+                    self._add_log(f"📈 KOMPEN v40: LV{self.state['kompen_level']} | Entropi {_ent:.2f} → Multi {_effective_mult}x | Rp {last_bet:,} → Rp {calculated_next:,}")
                     # --- END PATCH ---
                     self._record_loss_telemetry(sig, v)
-                    self._add_log(f"SIGNAL HIT {p_str[-4:]}: LOSE \u274c | [KOMPEN v39] Rp {last_bet:,} → Rp {self.state.get('next_bet_amount', last_bet):,} (LV{self.state.get('kompen_level', 1)})")
+                    self._add_log(f"SIGNAL HIT {p_str[-4:]}: LOSE \u274c | [KOMPEN v40] Rp {last_bet:,} → Rp {self.state.get('next_bet_amount', last_bet):,} (LV{self.state.get('kompen_level', 1)})")
                 
                 sig["win_info"] = win_info
                 sig["balance"] = self.virtual_balance
@@ -6667,7 +6655,7 @@ class QuantumMonitor:
                     self.brain.report_feedback(False)
                     last_bet = int(bet_amt)
                     mult = float(self.state.get("kompen_multiplier", 3.0))
-                    max_bet = int(self.state.get("kompen_max_bet", 21870000))
+                    max_bet = int(self.state.get("kompen_max_bet", 100000000000))
                     calculated_next = min(int(last_bet * mult), max_bet)
                     self.state["next_bet_amount"] = calculated_next
                     self.state["kompen_level"] += 1
@@ -6703,7 +6691,7 @@ class QuantumMonitor:
                 self.brain.report_feedback(False)
                 last_bet = int(bet_amt)
                 mult = float(self.state.get("kompen_multiplier", 3.0))
-                max_bet = int(self.state.get("kompen_max_bet", 21870000))
+                max_bet = int(self.state.get("kompen_max_bet", 100000000000))
                 calculated_next = min(int(last_bet * mult), max_bet)
                 self.state["next_bet_amount"] = calculated_next
                 self.state["kompen_level"] += 1
@@ -6959,17 +6947,14 @@ class QuantumMonitor:
                 m_idx = m_level - 1
                 bet_amt = self.bet_steps[m_idx] if m_idx < len(self.bet_steps) else self.bet_steps[0]
             
-            # [FIX v36] ADAPTIVE BET SIZING — jangan naikkan bet saat chaos / conf rendah
-            _conf_v36 = float(pred.get("acc", 0) or 0)
-            _ent_v36 = float(self.brain.quantum_entropy)
-            _base_v36 = self.bet_steps[0] if self.bet_steps else 10000
-            if _ent_v36 > 2.65 or _conf_v36 < 60.0:
-                if bet_amt > _base_v36:
-                    self._add_log(f"🛡️ [v36 ADAPTIVE] Entropi {_ent_v36:.2f} / Conf {_conf_v36:.1f}% → Bet ditahan di base Rp {_base_v36:,}")
-                    bet_amt = _base_v36
-                    self.state["next_bet_amount"] = _base_v36
-                    self.state["kompen_level"] = 1
-                    self.state["m_level"] = 1
+            # [v40] CAP ONLY — TIDAK reset ke base, kompen naik terus sampai cap
+            # Cap praktis unlimited: 100 miliar (biar tidak ada reset karena cap)
+            _high_cap_v40 = max(int(self.state.get("kompen_max_bet", 100000000000)), 100000000000)
+            if bet_amt > _high_cap_v40:
+                self._add_log(f"⚠️ [v40 CAP] Bet {bet_amt:,} > max {_high_cap_v40:,} → ditahan di max.")
+                bet_amt = _high_cap_v40
+                self.state["next_bet_amount"] = _high_cap_v40
+            # Tidak ada reset — kompen naik terus sampai WIN
             
             self.state["balance"] = int(self.virtual_balance)
             
