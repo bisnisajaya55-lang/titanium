@@ -7,6 +7,14 @@ Equipped with Neural Synapse Stabilization v2, Quantum Reversion Guard (QRG), an
 import numpy as np
 from collections import deque
 
+# [v38] Global cross-timeframe signal store (diisi dari app.py)
+_GLOBAL_CROSS_SIGNALS = {}
+
+def update_cross_signals(signals_dict):
+    """[v38] Dipanggil dari app.py untuk inject sinyal dari mode time-frame lain."""
+    global _GLOBAL_CROSS_SIGNALS
+    _GLOBAL_CROSS_SIGNALS = signals_dict or {}
+
 def _log(msg):
     """Internal logger for QuantumBrain"""
     print(f"[TITAN_LOG] {msg}")
@@ -95,6 +103,28 @@ class QuantumBrain:
         self.neural_weights = {"momentum": 1.0, "reversion": 1.0, "pattern": 1.0, "jp_sync": 1.0}
         self.chart = ChartAnalyzer(history_limit=100)
         self.last_stats = None
+        
+        # [AI-LEARN v1] Method performance tracker
+        self.method_scores = {
+            "markov": {"win": 0, "lose": 0, "weight": 1.0},
+            "markov_high": {"win": 0, "lose": 0, "weight": 1.0},
+            "bayesian": {"win": 0, "lose": 0, "weight": 1.0},
+            "tema": {"win": 0, "lose": 0, "weight": 1.0},
+            "kalman": {"win": 0, "lose": 0, "weight": 1.0},
+            "fourier": {"win": 0, "lose": 0, "weight": 1.0},
+            "knn": {"win": 0, "lose": 0, "weight": 1.0},
+            "holt_winters": {"win": 0, "lose": 0, "weight": 1.0},
+            "fuzzy": {"win": 0, "lose": 0, "weight": 1.0},
+            "pattern": {"win": 0, "lose": 0, "weight": 1.0},
+        }
+        # [AI-LEARN v1] Regime-based best method cache
+        self.regime_best = {
+            "TRENDING": [], "CHAOTIC": [], "MAX_CHAOS": [], "ZIGZAG_MOMENTUM": [],
+            "OMEGA_STABLE": [], "MIRRORING": [], "VIOLET_TRANSITION": [], "FRACTAL_DNA": []
+        }
+        self._last_engine_snapshot = {}
+        # [AI-LEARN v1] Auto-load learned memory
+        self._load_learned_memory()
         self.engine_performance = {
             "markov": 1.0, 
             "trend": 1.0, 
@@ -115,6 +145,221 @@ class QuantumBrain:
         self.prediction_queue = deque(maxlen=12) # For tracking anti-phase alignment patterns
         self.prediction_history_dict = {}
         self.noise_filter_factor = 1.0 
+        
+        # ========================================================
+        # [v38] FINAL PACKAGE — Self-Learning & Adaptive Core
+        # ========================================================
+        # Cross-timeframe mode key
+        self._current_mode_key = None
+        # Recent numbers (for backtest)
+        self._recent_nums = deque(maxlen=200)
+        # Adaptive threshold auto-tuner
+        self.adaptive_thresholds = {
+            "entropy_chaos": 2.40,
+            "entropy_max": 2.70,
+            "dragon_min": 2,
+            "fracture_min": 3
+        }
+        # Regime-aware method performance tracker
+        self.regime_method_perf = {}  # {phase: {method: {win, lose}}}
+        # Q-Learning lite (state-action value table)
+        self.q_table = {}
+        self.q_last_state = None
+        self.q_last_action = None
+        # Backtest cache
+        self.backtest_cache = {"accuracy": 0.5, "samples": 0}
+        # Feedback counter untuk auto-tune
+        self._feedback_counter = 0
+        # Load Q-table dari memory kalau ada
+        try:
+            import json as _j_q
+            import os as _o_q
+            if _o_q.path.exists("q_table.json"):
+                with open("q_table.json", "r") as _f_q:
+                    self.q_table = _j_q.load(_f_q)
+        except: pass
+
+    def _recalculate_method_weights(self):
+        """[AI-LEARN v1] Hitung ulang bobot tiap method berdasarkan win-rate historis."""
+        for m_name, m_data in self.method_scores.items():
+            total = m_data["win"] + m_data["lose"]
+            if total < 5:
+                continue  # Belum cukup data, biarkan weight default
+            wr = m_data["win"] / total
+            # Weight = 0.3 (min) sampai 2.5 (max), scaling dari win-rate
+            # WR 50% → weight 1.0 ; WR 70% → weight 1.9 ; WR 30% → weight 0.5
+            new_w = max(0.3, min(2.5, (wr - 0.25) * 2.5))
+            m_data["weight"] = round(new_w, 3)
+        self._log(f"[AI-LEARN] Method weights recalculated. Sample markov: {self.method_scores['markov']['weight']}")
+
+    def _save_learned_memory(self):
+        """[AI-LEARN v1] Simpan bobot yang sudah dipelajari ke disk."""
+        try:
+            import json as _json_lm
+            _data = {
+                "method_scores": self.method_scores,
+                "regime_best": self.regime_best,
+                "saved_at": __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            with open("brain_learned.json", "w") as _f:
+                _json_lm.dump(_data, _f, indent=2)
+            self._log("[AI-LEARN] Learned memory saved to brain_learned.json")
+        except Exception as _e:
+            self._log(f"[AI-LEARN] Save failed: {_e}")
+
+    def _load_learned_memory(self):
+        """[AI-LEARN v1] Load bobot yang sudah dipelajari dari disk."""
+        try:
+            import json as _json_lm, os as _os_lm
+            if _os_lm.path.exists("brain_learned.json"):
+                with open("brain_learned.json", "r") as _f:
+                    _data = _json_lm.load(_f)
+                if "method_scores" in _data:
+                    for _k, _v in _data["method_scores"].items():
+                        if _k in self.method_scores:
+                            self.method_scores[_k] = _v
+                if "regime_best" in _data:
+                    self.regime_best.update(_data["regime_best"])
+                self._log(f"[AI-LEARN] Learned memory loaded (saved: {_data.get('saved_at', '?')})")
+        except Exception as _e:
+            self._log(f"[AI-LEARN] Load failed (fresh start): {_e}")
+
+    # ============================================================
+    # [v38] FINAL PACKAGE METHODS
+    # ============================================================
+    def set_mode_key(self, mode_key):
+        """[v38] Set mode saat ini untuk cross-signal filtering."""
+        self._current_mode_key = mode_key
+
+    def get_cross_signal_vectors(self, history_nums):
+        """[v38] Ekstrak sinyal konfirmasi dari mode time-frame lain (30s/1m/3m/5m)."""
+        vectors = {"B": 0.0, "K": 0.0}
+        if not _GLOBAL_CROSS_SIGNALS:
+            return vectors
+        _cur = self._current_mode_key
+        for mode_key, mode_data in _GLOBAL_CROSS_SIGNALS.items():
+            if mode_key == _cur or not mode_data:
+                continue
+            streak = mode_data.get("streak", 0)
+            streak_side = mode_data.get("streak_side", None)
+            last_5_bk = mode_data.get("last_5_bk", [])
+            # Streak dari mode lain yang >= 2 = konfirmasi kuat
+            if streak_side and streak >= 2:
+                base_boost = 5000.0 * min(streak, 6)
+                if streak_side == "B":
+                    vectors["B"] += base_boost
+                elif streak_side == "K":
+                    vectors["K"] += base_boost
+            # Dominasi 5 periode terakhir
+            if len(last_5_bk) >= 5:
+                b_cnt = sum(1 for s in last_5_bk if s == "B")
+                if b_cnt >= 4:
+                    vectors["B"] += 3500.0
+                elif b_cnt <= 1:
+                    vectors["K"] += 3500.0
+        return vectors
+
+    def run_backtest(self, history_nums, n_periods=100):
+        """[v38] Backtest ringan: hitung akurasi metode pada N periode terakhir."""
+        if not history_nums or len(history_nums) < 30:
+            return {"accuracy": 0.5, "samples": 0}
+        _start = max(20, len(history_nums) - n_periods)
+        _wins, _total = 0, 0
+        for _i in range(_start, len(history_nums) - 1):
+            _sub = history_nums[:_i]
+            _actual = history_nums[_i]
+            if len(_sub) < 10:
+                continue
+            _last = _sub[-1]
+            _lookback = _sub[-100:]
+            _trans_b, _trans_k = 0, 0
+            for _j in range(len(_lookback) - 1):
+                if _lookback[_j] == _last:
+                    if _lookback[_j+1] >= 5: _trans_b += 1
+                    else: _trans_k += 1
+            if _trans_b + _trans_k < 2:
+                continue
+            _pred_side = "B" if _trans_b >= _trans_k else "K"
+            _actual_side = "B" if _actual >= 5 else "K"
+            if _pred_side == _actual_side:
+                _wins += 1
+            _total += 1
+        _acc = (_wins / _total) if _total > 0 else 0.5
+        self.backtest_cache = {"accuracy": round(_acc, 4), "samples": _total}
+        return self.backtest_cache
+
+    def auto_tune_thresholds(self):
+        """[v38] AutoML-lite: sesuaikan threshold berdasarkan akurasi backtest."""
+        _bt = self.backtest_cache.get("accuracy", 0.5)
+        _at = self.adaptive_thresholds
+        if _bt < 0.50:
+            # Akurasi rendah → konservatif
+            _at["entropy_chaos"] = max(2.0, _at["entropy_chaos"] - 0.05)
+            _at["entropy_max"] = max(2.4, _at["entropy_max"] - 0.05)
+            _at["dragon_min"] = min(4, _at["dragon_min"] + 1)
+        elif _bt > 0.65:
+            # Akurasi bagus → sedikit agresif
+            _at["entropy_chaos"] = min(2.6, _at["entropy_chaos"] + 0.03)
+            _at["entropy_max"] = min(2.9, _at["entropy_max"] + 0.03)
+        self._save_learned_memory()
+        # Save q_table juga
+        try:
+            import json as _j_qt
+            with open("q_table.json", "w") as _f_qt:
+                _j_qt.dump(self.q_table, _f_qt)
+        except: pass
+
+    def q_learn_update(self, reward):
+        """[v38] Simple Q-Learning update."""
+        if self.q_last_state is None or self.q_last_action is None:
+            return
+        _alpha = 0.15
+        _s_key = self.q_last_state
+        _a_key = self.q_last_action
+        if _s_key not in self.q_table:
+            self.q_table[_s_key] = {"B": 0.0, "K": 0.0}
+        _old_q = self.q_table[_s_key].get(_a_key, 0.0)
+        _new_q = _old_q + _alpha * (reward - _old_q)
+        self.q_table[_s_key][_a_key] = round(_new_q, 4)
+        # Cleanup kalau > 500 entries
+        if len(self.q_table) > 500:
+            _sorted = sorted(self.q_table.items(), key=lambda x: abs(x[1].get("B", 0)) + abs(x[1].get("K", 0)))
+            self.q_table = dict(_sorted[-400:])
+
+    def _build_state_key(self, history_nums):
+        """[v38] Bangun state key untuk Q-table."""
+        _phase = self.market_phase or "STABLE"
+        _last3 = "".join(["B" if n >= 5 else "K" for n in history_nums[-3:]])
+        return f"{_phase}|{_last3}"
+
+    def get_q_suggestion(self, history_nums):
+        """[v38] Ambil saran dari Q-table untuk state saat ini."""
+        if not self.q_table or len(history_nums) < 5:
+            return {"B": 0.0, "K": 0.0}
+        _state_key = self._build_state_key(history_nums)
+        self.q_last_state = _state_key
+        if _state_key in self.q_table:
+            _q = self.q_table[_state_key]
+            _b_q = _q.get("B", 0.0)
+            _k_q = _q.get("K", 0.0)
+            _vectors = {"B": 0.0, "K": 0.0}
+            if abs(_b_q) > 0.05 or abs(_k_q) > 0.05:
+                _scale = 12000.0
+                _vectors["B"] = max(0, _b_q) * _scale
+                _vectors["K"] = max(0, _k_q) * _scale
+            return _vectors
+        return {"B": 0.0, "K": 0.0}
+
+    def get_regime_adaptive_weight(self, method_name):
+        """[v38] Boost weight kalau method akurat di regime saat ini."""
+        _phase = self.market_phase or "STABLE"
+        _rp = self.regime_method_perf.get(_phase, {})
+        _mp = _rp.get(method_name, {"win": 0, "lose": 0})
+        _total = _mp["win"] + _mp["lose"]
+        if _total < 5:
+            return 1.0
+        _wr = _mp["win"] / _total
+        return max(0.5, min(1.8, 0.5 + _wr * 1.2))
 
     def analyze_failure(self, pred_bk=None, actual_bk=None):
         """Analyzes the root cause of recent losses and suggests a solution (Titan 11.0 Precision Audit)"""
@@ -187,6 +432,82 @@ class QuantumBrain:
     def report_feedback(self, was_correct, is_jp=False, pred_bk=None, actual_bk=None):
         """AI Feedback Loop to adjust future projections (Titan 9.2 NSS)"""
         self.last_prediction_was_correct = was_correct
+        
+        # ========================================================
+        # [v38] FINAL PACKAGE HOOKS
+        # ========================================================
+        _snap_rf = getattr(self, "_last_engine_snapshot", {})
+        
+        # 1. Regime-aware method performance tracker
+        if _snap_rf and "phase" in _snap_rf:
+            _ph = _snap_rf["phase"]
+            if _ph not in self.regime_method_perf:
+                self.regime_method_perf[_ph] = {}
+            _final_key_rf = _snap_rf.get("final_side_key", "B")
+            _winner_rf = 1 if _final_key_rf == "B" else -1
+            for _mname, _mvote in _snap_rf.items():
+                if _mname in ("final_side_key", "phase"):
+                    continue
+                if _mname not in self.regime_method_perf[_ph]:
+                    self.regime_method_perf[_ph][_mname] = {"win": 0, "lose": 0}
+                if _mvote == _winner_rf:
+                    if was_correct:
+                        self.regime_method_perf[_ph][_mname]["win"] += 1
+                    else:
+                        self.regime_method_perf[_ph][_mname]["lose"] += 1
+        
+        # 2. Q-Learning reward
+        _reward = 1.0 if was_correct else -1.0
+        if is_jp and was_correct:
+            _reward = 3.0
+        if self.q_last_state is not None and _snap_rf:
+            self.q_last_action = _snap_rf.get("final_side_key", "B")
+            self.q_learn_update(_reward)
+        
+        # 3. Auto-tune tiap 25 feedback
+        self._feedback_counter += 1
+        if self._feedback_counter % 25 == 0:
+            try:
+                if hasattr(self, "_recent_nums") and len(self._recent_nums) >= 30:
+                    self.run_backtest(list(self._recent_nums), n_periods=100)
+                    self.auto_tune_thresholds()
+                    self._log(f"[v38 AUTOTUNE] Backtest acc: {self.backtest_cache.get('accuracy', 0.5)} | Thresholds: {self.adaptive_thresholds}")
+            except Exception as _at_e:
+                self._log(f"[v38 AUTOTUNE] Error: {_at_e}")
+        
+        if is_jp and was_correct:
+        
+        # [AI-LEARN v1] Update method scores berdasarkan hasil
+        _snap = getattr(self, "_last_engine_snapshot", {})
+        if _snap and "final_side_key" in _snap:
+            _final_key = _snap["final_side_key"]  # 'B' atau 'K'
+            _winner_dir = 1 if _final_key == "B" else -1
+            for _m_name, _m_vote in _snap.items():
+                if _m_name in ("final_side_key", "phase"):
+                    continue
+                if _m_name not in self.method_scores:
+                    continue
+                # Method "setuju" dengan final = cek apakah vote searah dengan hasil
+                _method_aligned = (_m_vote == _winner_dir)
+                if was_correct and _method_aligned:
+                    self.method_scores[_m_name]["win"] += 1
+                elif not was_correct and _method_aligned:
+                    # Method setuju tapi hasilnya salah = method itu salah
+                    self.method_scores[_m_name]["lose"] += 1
+                # Kalau method tidak setuju dengan final, tidak dihitung (abstain)
+            
+            # Simpan phase info untuk regime learning
+            _phase = _snap.get("phase", "UNKNOWN")
+            if _phase in self.regime_best and was_correct:
+                if _final_key not in self.regime_best[_phase]:
+                    self.regime_best[_phase].append(_final_key)
+                    self.regime_best[_phase] = self.regime_best[_phase][-20:]
+        
+        # Auto-adjust weight setiap 10 total feedback
+        _total_fb = sum(m["win"] + m["lose"] for m in self.method_scores.values())
+        if _total_fb > 0 and _total_fb % 10 == 0:
+            self._recalculate_method_weights()
+            self._save_learned_memory()
         
         if is_jp and was_correct:
             self.jp_resonance_count += 1
@@ -320,16 +641,15 @@ class QuantumBrain:
                     prev_streak_len += 1
                 else:
                     break
-            # FIX: Hanya dianggap "fracture" kalau naga sebelumnya minimal 3x
-            # (naga 2x patah = kondisi normal, bukan anomali)
+            # FIX v37: Fracture recovery = FOLLOW the breaking side (momentum continue)
+            # Bukti audit: Setelah BBB→K, K sering lanjut 1-2x baru balik B
             if prev_streak_len >= 3:
                 is_dragon_fracture = True
                 broken_dragon_side = prev_streak_side
                 broken_dragon_len = prev_streak_len
-                # [PATCH H1] INVERTED: Bet on trend RESUMPTION, not flip continuation
-                # Bukti production: 15/15 losses = FRACTURE, 100% salah arah
-                fracture_recovery_side = prev_streak_side
-                fracture_dead_side = last_side
+                # v37: Ikuti sisi baru (last_side) yang memecah naga
+                fracture_recovery_side = last_side
+                fracture_dead_side = prev_streak_side
                 
         # Calculate stagnant consecutive identical number length (e.g. 4-4-4-4)
         stagnant_len = 0
@@ -805,6 +1125,154 @@ class QuantumBrain:
             fuzzy_vectors["B"] = mu_b * 12000.0
             fuzzy_vectors["K"] = mu_k * 12000.0
 
+        # RUMUS MATH 10: HIDDEN MARKOV MODEL (HMM 2-state)
+        hmm_vectors = {"B": 0.0, "K": 0.0}
+        if len(history_nums) >= 15:
+            _obs = [1 if n >= 5 else 0 for n in history_nums[-15:]]
+            _trans_bb, _trans_bk, _trans_kb, _trans_kk = 0.1, 0.1, 0.1, 0.1
+            for _i in range(len(_obs) - 1):
+                if _obs[_i] == 1 and _obs[_i+1] == 1: _trans_bb += 1
+                elif _obs[_i] == 1 and _obs[_i+1] == 0: _trans_bk += 1
+                elif _obs[_i] == 0 and _obs[_i+1] == 1: _trans_kb += 1
+                else: _trans_kk += 1
+            _sum_b = _trans_bb + _trans_bk
+            _sum_k = _trans_kb + _trans_kk
+            _p_next_b = (_trans_bb / _sum_b) if _obs[-1] == 1 else (_trans_kb / _sum_k)
+            if _p_next_b >= 0.5:
+                hmm_vectors["B"] = (_p_next_b - 0.5) * 20000.0
+            else:
+                hmm_vectors["K"] = (0.5 - _p_next_b) * 20000.0
+
+        # RUMUS MATH 11: CUSUM CHANGE POINT DETECTOR
+        cusum_vectors = {"B": 0.0, "K": 0.0}
+        if len(history_nums) >= 20:
+            _sides_c = [1 if n >= 5 else 0 for n in history_nums[-20:]]
+            _mean_c = sum(_sides_c) / len(_sides_c)
+            _cusum_pos, _cusum_neg = 0.0, 0.0
+            _threshold_c = 2.5
+            for _v in _sides_c:
+                _cusum_pos = max(0, _cusum_pos + _v - _mean_c - 0.1)
+                _cusum_neg = max(0, _cusum_neg - _v + _mean_c - 0.1)
+            if _cusum_pos > _threshold_c:
+                cusum_vectors["K"] = 18000.0
+            elif _cusum_neg > _threshold_c:
+                cusum_vectors["B"] = 18000.0
+
+        # RUMUS MATH 12: THOMPSON SAMPLING MULTI-ARMED BANDIT
+        thompson_vectors = {"B": 0.0, "K": 0.0}
+        if len(history_nums) >= 10:
+            import random as _rnd_ts
+            _best_b, _best_k = 0.0, 0.0
+            _snap_ts = getattr(self, "_last_engine_snapshot", {}) or {}
+            for _m, _sc in self.method_scores.items():
+                _w, _l = _sc["win"] + 1, _sc["lose"] + 1
+                _samp = _rnd_ts.betavariate(_w, _l)
+                _snap_vote = _snap_ts.get(_m, 0)
+                if _snap_vote == 1: _best_b += _samp
+                elif _snap_vote == -1: _best_k += _samp
+            if _best_b > _best_k:
+                thompson_vectors["B"] = min(20000.0, _best_b * 8000.0)
+            else:
+                thompson_vectors["K"] = min(20000.0, _best_k * 8000.0)
+
+        # RUMUS MATH 13: ENTROPY GRADIENT DETECTOR
+        entropy_grad_vectors = {"B": 0.0, "K": 0.0}
+        if len(self.entropy_history) >= 4:
+            _eh = list(self.entropy_history)[-4:]
+            _grad = (_eh[-1] - _eh[0]) / 3.0
+            if _grad > 0.08:
+                if history_nums[-1] >= 5:
+                    entropy_grad_vectors["B"] = 15000.0
+                else:
+                    entropy_grad_vectors["K"] = 15000.0
+
+        # RUMUS MATH 14: WEIGHTED MOVING AVERAGE CROSSOVER
+        wma_vectors = {"B": 0.0, "K": 0.0}
+        if len(history_nums) >= 10:
+            _wma_fast = sum((_i + 1) * history_nums[-5:][_i] for _i in range(5)) / 15.0
+            _wma_slow = sum((_i + 1) * history_nums[-10:][_i] for _i in range(10)) / 55.0
+            _wma_diff = _wma_fast - _wma_slow
+            if _wma_diff > 0.8:
+                wma_vectors["B"] = min(18000.0, _wma_diff * 8000.0)
+            elif _wma_diff < -0.8:
+                wma_vectors["K"] = min(18000.0, abs(_wma_diff) * 8000.0)
+
+        # RUMUS MATH 15: MAJORITY VOTE 5-WINDOW
+        maj_vectors = {"B": 0.0, "K": 0.0}
+        if len(history_nums) >= 5:
+            _last5 = [1 if n >= 5 else 0 for n in history_nums[-5:]]
+            _b_cnt = sum(_last5)
+            if _b_cnt >= 4:
+                maj_vectors["B"] = 12000.0
+            elif _b_cnt <= 1:
+                maj_vectors["K"] = 12000.0
+
+        # RUMUS MATH 16: NEAREST GAP PATTERN MATCHER
+        gap_vectors = {"B": 0.0, "K": 0.0}
+        if len(history_nums) >= 8:
+            _recent_side = "B" if history_nums[-1] >= 5 else "K"
+            _gap_len = 0
+            for _n in reversed(history_nums):
+                if ("B" if _n >= 5 else "K") == _recent_side: _gap_len += 1
+                else: break
+            _historical_next = []
+            _cur_gap = 1
+            for _i in range(1, len(history_nums)):
+                _s_prev = "B" if history_nums[_i-1] >= 5 else "K"
+                _s_cur = "B" if history_nums[_i] >= 5 else "K"
+                if _s_cur == _s_prev:
+                    _cur_gap += 1
+                else:
+                    if _cur_gap == _gap_len:
+                        _historical_next.append(_s_cur)
+                    _cur_gap = 1
+            if _historical_next:
+                _b_wins = _historical_next.count("B")
+                _k_wins = _historical_next.count("K")
+                if _b_wins > _k_wins:
+                    gap_vectors["B"] = (_b_wins / len(_historical_next)) * 15000.0
+                elif _k_wins > _b_wins:
+                    gap_vectors["K"] = (_k_wins / len(_historical_next)) * 15000.0
+
+        # RUMUS MATH 17: PROBABILITY DISTRIBUTION SPREAD
+        spread_vectors = {"B": 0.0, "K": 0.0}
+        if len(history_nums) >= 10:
+            _std_recent = float(np.std(history_nums[-10:]))
+            if _std_recent < 2.0:
+                if history_nums[-1] >= 5:
+                    spread_vectors["B"] = 10000.0
+                else:
+                    spread_vectors["K"] = 10000.0
+
+        # RUMUS MATH 18: LAST-30 BIAS DETECTOR
+        hour_bias_vectors = {"B": 0.0, "K": 0.0}
+        if len(history_nums) >= 30:
+            _current_hour_b = sum(1 for n in history_nums[-30:] if n >= 5)
+            if _current_hour_b >= 18:
+                hour_bias_vectors["B"] = 8000.0
+            elif _current_hour_b <= 12:
+                hour_bias_vectors["K"] = 8000.0
+
+        # RUMUS MATH 19: VOLUME-WEIGHTED TREND
+        vw_vectors = {"B": 0.0, "K": 0.0}
+        if len(history_nums) >= 12:
+            _recent = history_nums[-12:]
+            _weighted = sum((_i + 1) * (1 if _recent[_i] >= 5 else -1) for _i in range(12))
+            if _weighted > 15:
+                vw_vectors["B"] = 14000.0
+            elif _weighted < -15:
+                vw_vectors["K"] = 14000.0
+
+        # [v38] CROSS-TIMEFRAME CONFIRMATION
+        cross_vectors = self.get_cross_signal_vectors(history_nums)
+        
+        # [v38] Q-LEARNING SUGGESTION (dari pengalaman historis)
+        q_vectors = self.get_q_suggestion(history_nums)
+        
+        # [v38] Simpan history untuk backtest
+        if history_nums:
+            self._recent_nums.append(history_nums[-1])
+
         # SENSITIVE CHAOS DETECTION (Titan 8.9 Ultra+)
         is_chaotic = self.quantum_entropy > 2.35 or side_entropy > 0.88
         is_max_chaos = self.quantum_entropy > 2.70
@@ -879,9 +1347,11 @@ class QuantumBrain:
         
         # TITAN VECTOR BASE (FINAL STABILIZED)
         # Multi-Engine Weights with Dynamic Recalibration
-        w_markov = 1.45 * self.engine_performance["markov"]
+        # [AI-LEARN v1] Base weight × learned weight
+        _lw = lambda k: self.method_scores.get(k, {}).get("weight", 1.0)
+        w_markov = 1.45 * self.engine_performance["markov"] * _lw("markov")
         w_trend = 1.25 * self.engine_performance["trend"]
-        w_pattern = 1.85 * self.engine_performance["pattern"]
+        w_pattern = 1.85 * self.engine_performance["pattern"] * _lw("pattern")
         w_regress = 1.20 * self.engine_performance["regress"]
         w_mirror = 1.8 if self.market_phase == "MIRRORING" else 0.0
 
@@ -957,14 +1427,14 @@ class QuantumBrain:
             self._log(f"JP_COOP_SYNC: Matrix weights harmonized by {jp_boost:.2f}x")
 
         # --- SIGNAL CALCULATION ---
-        w_markov_high = 1.40 * self.engine_performance.get("markov_high", 1.0)
-        w_bayesian = 1.35 * self.engine_performance.get("bayesian", 1.0)
-        w_tema = 1.25 * self.engine_performance.get("tema", 1.0)
-        w_kalman = 1.30 * self.engine_performance.get("kalman", 1.0)
-        w_fourier = 1.20 * self.engine_performance.get("fourier", 1.0)
-        w_knn = 1.25 * self.engine_performance.get("knn", 1.0)
-        w_holt_winters = 1.35 * self.engine_performance.get("holt_winters", 1.0)
-        w_fuzzy = 1.15 * self.engine_performance.get("fuzzy", 1.0)
+        w_markov_high = 1.40 * self.engine_performance.get("markov_high", 1.0) * _lw("markov_high")
+        w_bayesian = 1.35 * self.engine_performance.get("bayesian", 1.0) * _lw("bayesian")
+        w_tema = 1.25 * self.engine_performance.get("tema", 1.0) * _lw("tema")
+        w_kalman = 1.30 * self.engine_performance.get("kalman", 1.0) * _lw("kalman")
+        w_fourier = 1.20 * self.engine_performance.get("fourier", 1.0) * _lw("fourier")
+        w_knn = 1.25 * self.engine_performance.get("knn", 1.0) * _lw("knn")
+        w_holt_winters = 1.35 * self.engine_performance.get("holt_winters", 1.0) * _lw("holt_winters")
+        w_fuzzy = 1.15 * self.engine_performance.get("fuzzy", 1.0) * _lw("fuzzy")
 
         v_b = (float(markov_vectors["B"]) * w_markov) + \
               (trend_data.get("B", 0.0) * w_trend) + \
@@ -975,7 +1445,13 @@ class QuantumBrain:
               (float(fourier_vectors["B"]) * w_fourier) + \
               (float(knn_vectors["B"]) * w_knn) + \
               (float(holt_winters_vectors["B"]) * w_holt_winters) + \
-              (float(fuzzy_vectors["B"]) * w_fuzzy)
+              (float(fuzzy_vectors["B"]) * w_fuzzy) + \
+              float(hmm_vectors["B"]) + float(cusum_vectors["B"]) + \
+              float(thompson_vectors["B"]) + float(entropy_grad_vectors["B"]) + \
+              float(wma_vectors["B"]) + float(maj_vectors["B"]) + \
+              float(gap_vectors["B"]) + float(spread_vectors["B"]) + \
+              float(hour_bias_vectors["B"]) + float(vw_vectors["B"]) + \
+              float(cross_vectors["B"]) + float(q_vectors["B"])
 
         v_k = (float(markov_vectors["K"]) * w_markov) + \
               (trend_data.get("K", 0.0) * w_trend) + \
@@ -986,7 +1462,13 @@ class QuantumBrain:
               (float(fourier_vectors["K"]) * w_fourier) + \
               (float(knn_vectors["K"]) * w_knn) + \
               (float(holt_winters_vectors["K"]) * w_holt_winters) + \
-              (float(fuzzy_vectors["K"]) * w_fuzzy)
+              (float(fuzzy_vectors["K"]) * w_fuzzy) + \
+              float(hmm_vectors["K"]) + float(cusum_vectors["K"]) + \
+              float(thompson_vectors["K"]) + float(entropy_grad_vectors["K"]) + \
+              float(wma_vectors["K"]) + float(maj_vectors["K"]) + \
+              float(gap_vectors["K"]) + float(spread_vectors["K"]) + \
+              float(hour_bias_vectors["K"]) + float(vw_vectors["K"]) + \
+              float(cross_vectors["K"]) + float(q_vectors["K"])
         
         vectors = {"B": v_b, "K": v_k}
         
@@ -1011,33 +1493,23 @@ class QuantumBrain:
         pattern_vectors = {"B": 0.0, "K": 0.0}
         
         # 5.0 DRAGON LOGIC (HIGHEST PRIORITY - FOLLOW-TREND LOCK - DILARANG COUNTER-BET)
+        # v37 DRAGON FOLLOW — boost lebih kuat, threshold turun ke 2
         if patterns["dragon"] >= 2:
             flip_side = "K" if patterns["last"] == "B" else "B"
-            if patterns["dragon"] >= 12:
-                # ULTRA DRAGON: Never counter-bet super dragon (Follow-Trend Lock)
-                boost = 60000.0 * (patterns["dragon"] ** 1.7)
-                pattern_vectors[patterns["last"]] += boost * self.neural_weights["momentum"]
-                pattern_vectors[flip_side] = 0.0
-                vectors[flip_side] = 0.0
-            elif patterns["dragon"] >= 4:
-                # STRONG DRAGON: Solid lock on trend
-                boost = 45000.0 * (patterns["dragon"] ** 1.6)
-                pattern_vectors[patterns["last"]] += boost * self.neural_weights["momentum"]
-                pattern_vectors[flip_side] = 0.0
-                vectors[flip_side] = 0.0
-            elif patterns["dragon"] == 3:
-                # HEALTHY DRAGON: Continuation
-                boost = 30000.0 * (patterns["dragon"] ** 1.35)
-                pattern_vectors[patterns["last"]] += boost * self.neural_weights["momentum"]
-                pattern_vectors[flip_side] = 0.0
-                vectors[flip_side] = 0.0
-            else:
-                # EARLY DRAGON (dragon == 2): Trend continuation booster to eliminate early kebocoran
-                boost = 25000.0 * self.neural_weights.get("momentum", 1.0)
-                pattern_vectors[patterns["last"]] += boost
-                pattern_vectors[flip_side] = 0.0
-                vectors[flip_side] = 0.0
-            self._log(f"DRAGON LOCK (PATTERN MATRIX): Follow-trend streak {patterns['dragon']}x on '{patterns['last']}'. Counter-bet eliminated.")
+            # v37: Semua dragon >= 2 di-lock kuat (bukan hanya >= 4)
+            if patterns["dragon"] >= 8:
+                boost = 80000.0 * (patterns["dragon"] ** 1.8)
+            elif patterns["dragon"] >= 5:
+                boost = 65000.0 * (patterns["dragon"] ** 1.7)
+            elif patterns["dragon"] >= 3:
+                boost = 55000.0 * (patterns["dragon"] ** 1.5)
+            else:  # dragon == 2
+                boost = 45000.0 * self.neural_weights.get("momentum", 1.0)
+            
+            pattern_vectors[patterns["last"]] += boost
+            pattern_vectors[flip_side] = 0.0
+            vectors[flip_side] = 0.0  # Absolute lock
+            self._log(f"DRAGON LOCK v37: Follow-trend streak {patterns['dragon']}x on '{patterns['last']}'. Counter-bet eliminated.")
         # 5.1 CLUSTER DETECTION (AA-BB-AA-BB / POLA 2-2 DOUBLE-STEP) - ONLY IF NOT IN ACTIVE DRAGON
         elif patterns.get("mirror") == 1 and patterns["dragon"] < 2:
             flip_pair_side = "K" if patterns["last"] == "B" else "B"
@@ -1190,15 +1662,18 @@ class QuantumBrain:
             elif ignore_reversion:
                 self._log("TREND_GUARD: Active trend / dragon detected. Reversion strictly bypassed to follow trend.")
             
-            # Law of Regression (Neural Sync v3)
+            # Law of Regression v37 — SUPPRESSED kecuali pasar jelas ranging
+            # Bukti audit: Counter-bet saat imbalance kalah 42% — matikan
             if total_seg > 4 and self.market_phase != "ZIGZAG_MOMENTUM" and not is_trend_dominant:
                 b_ratio = b_count / total_seg
-                if self.loss_counter >= 1 or self.quantum_entropy > 2.80:
-                    pass # Neutralize speculative counter-trade during Martingale or chaos
-                elif b_ratio > 0.55: # Overloaded Besar
-                    vectors["K"] += 35000.0 * min(2.0, self.quantum_entropy) * reversion_scalar
-                elif b_ratio < 0.45: # Overloaded Kecil
-                    vectors["B"] += 35000.0 * min(2.0, self.quantum_entropy) * reversion_scalar
+                # Hanya aktif saat entropy RENDAH (pasar tenang/ranging)
+                _rev_allowed = (self.quantum_entropy < 2.0 and self.loss_counter == 0)
+                if not _rev_allowed:
+                    pass  # v37: Reversion OFF saat chaos/streak
+                elif b_ratio > 0.65:  # Threshold naik dari 0.55 → 0.65
+                    vectors["K"] += 20000.0 * reversion_scalar  # Dikurangi dari 35000
+                elif b_ratio < 0.35:  # Threshold turun dari 0.45 → 0.35
+                    vectors["B"] += 20000.0 * reversion_scalar
             
             # Cluster Suppression v4 (Titan 10.0 Black Ops - Static Twin Attractor Guard)
             if len(history_nums) >= 2 and self.market_phase != "ZIGZAG_MOMENTUM" and not is_trend_dominant:
@@ -1742,11 +2217,21 @@ class QuantumBrain:
             # Shift confidence slightly higher as we have successfully inverted to match phase
             confidence = min(98.50, confidence * 1.15)
 
-        # FINAL HONEST CONFIDENCE CLAMPING (Titan 11.0 Hyper-Precision Telemetry)
+        # v37 HONEST CONFIDENCE — cap lebih rendah, hindari ilusi 97.5%
         if self.quantum_entropy > 2.80 or self.market_phase == "MAX_CHAOS":
-            confidence = min(62.0, confidence)
+            confidence = min(50.0, confidence * 0.75)
         elif self.quantum_entropy > 2.40 or self.market_phase == "CHAOTIC":
-            confidence = min(72.0, confidence)
+            confidence = min(60.0, confidence * 0.80)
+        elif self.quantum_entropy > 2.00:
+            confidence = min(72.0, confidence * 0.90)
+        else:
+            confidence = min(85.0, confidence)  # Max 85%, bukan 99.5%
+        
+        # Extra penalty kalau loss streak
+        if self.loss_counter >= 2:
+            confidence *= 0.85
+        if self.loss_counter >= 4:
+            confidence *= 0.75
 
         # Final results were already calculated via 50-iteration Neural Consensus loop
         self.num_history.append(target_jp_num)
@@ -1781,6 +2266,22 @@ class QuantumBrain:
         # DYNAMIC ACCURACY (Internal projection)
         acc_base = confidence
         if self.loss_counter > 0: acc_base -= (self.loss_counter * 5)
+        
+        # [AI-LEARN v1] Snapshot method votes untuk feedback
+        self._last_engine_snapshot = {
+            "markov": 1 if markov_vectors["B"] > markov_vectors["K"] else -1,
+            "markov_high": 1 if markov_high_vectors["B"] > markov_high_vectors["K"] else -1,
+            "bayesian": 1 if bayesian_vectors["B"] > bayesian_vectors["K"] else -1,
+            "tema": 1 if tema_vectors["B"] > tema_vectors["K"] else -1,
+            "kalman": 1 if kalman_vectors["B"] > kalman_vectors["K"] else -1,
+            "fourier": 1 if fourier_vectors["B"] > fourier_vectors["K"] else -1,
+            "knn": 1 if knn_vectors["B"] > knn_vectors["K"] else -1,
+            "holt_winters": 1 if holt_winters_vectors["B"] > holt_winters_vectors["K"] else -1,
+            "fuzzy": 1 if fuzzy_vectors["B"] > fuzzy_vectors["K"] else -1,
+            "pattern": 1 if pattern_vectors["B"] > pattern_vectors["K"] else -1,
+            "final_side_key": final_side_key,
+            "phase": self.market_phase
+        }
         
         return {
             "side": final_side,
