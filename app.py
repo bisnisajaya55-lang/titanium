@@ -1642,16 +1642,18 @@ class WingoMasterBrain:
             elif self.market_mood == "ZIGZAG_MOMENTUM":
                 _log("TITAN_ZIGZAG: Strategic Alternation engaged (24/7 Stability Mode).")
 
-            # Dynamic, realistic accuracy and confidence estimation
+            # [FIX v36] REALISTIC CONFIDENCE — cap 88%, penalti bertingkat
             entropy_factor = max(0.0, (self.quantum_entropy - 1.2) * 8.0)
             base_conf = (max(votes_b, votes_k) / total_models * 100) - entropy_factor
             
-            if self.quantum_entropy > 3.0:
-                confidence = max(60.0, min(75.0, base_conf))
+            if self.quantum_entropy > 2.8:
+                confidence = max(45.0, min(58.0, base_conf - 25))
             elif self.quantum_entropy > 2.5:
-                confidence = max(65.0, min(85.0, base_conf))
+                confidence = max(52.0, min(68.0, base_conf - 15))
+            elif self.quantum_entropy > 2.0:
+                confidence = max(60.0, min(78.0, base_conf - 8))
             else:
-                confidence = max(68.0, min(97.5, base_conf))
+                confidence = max(65.0, min(88.0, base_conf))
             
             # === AUTO-ADJUST BERDASARKAN LOSS STREAK ===
             failed_streak = getattr(self, 'failed_streak', 0)
@@ -6081,6 +6083,39 @@ class QuantumMonitor:
                     self.mode_store[mode_key]["history"] = list(self.state["history"])
                     self.mode_store[mode_key]["processed"] = set(self.processed_p)
                     self.mode_store[mode_key]["stats"] = dict(self.state["stats"])
+                    
+                    # [v38] UPDATE CROSS-TIMEFRAME SIGNALS untuk otak.py
+                    try:
+                        _cross_signals = {}
+                        for _mk, _md in self.mode_store.items():
+                            _h = _md.get("history", [])
+                            if _h and len(_h) >= 2:
+                                _sides_all = ["B" if h.get("val", 0) >= 5 else "K" for h in _h if h.get("val") is not None]
+                                _sides_5 = _sides_all[:5]
+                                _streak = 0
+                                _streak_side = None
+                                if _sides_5:
+                                    _streak_side = _sides_5[0]
+                                    for _s in _sides_5:
+                                        if _s == _streak_side:
+                                            _streak += 1
+                                        else:
+                                            break
+                                _cross_signals[_mk] = {
+                                    "last_5_bk": _sides_5,
+                                    "streak": _streak,
+                                    "streak_side": _streak_side
+                                }
+                        from otak import update_cross_signals, QuantumBrain
+                        update_cross_signals(_cross_signals)
+                        # Set current mode key ke brain
+                        try:
+                            _brain = getattr(self, "brain", None)
+                            if _brain and hasattr(_brain, "quantum"):
+                                _brain.quantum.set_mode_key(str(mode_key))
+                        except: pass
+                    except Exception as _cs_e:
+                        pass  # Silent fail, jangan ganggu monitor loop
                 else:
                     self.state["status"] = "SYNCING DATA (COLLECTING MATRIX)..."
                     # Auto-Deep Scan if history is empty to speed up matrix collection (disabled in safe_play_mode)
@@ -6550,14 +6585,15 @@ class QuantumMonitor:
                     mult = float(self.state.get("kompen_multiplier", 3.0))
                     max_bet = int(self.state.get("kompen_max_bet", 21870000))
 
-                    # --- PATCH: SOFT MARTINGALE BRAKE (ANTI-RUNGKAD) ---
+                    # --- PATCH v36: HARD MARTINGALE BRAKE (ANTI-RUNGKAD KUAT) ---
+                    # Threshold diturunkan: entropy > 2.65 ATAU streak >= 2 → paksa reset
                     _ent = float(self.brain.quantum_entropy)
                     _streak = int(self.state["stats"].get("current_lose_streak", 0))
-                    if _ent > 2.85 or _streak >= 3:
+                    if _ent > 2.65 or _streak >= 2:
                         self.state["next_bet_amount"] = self.bet_steps[0] if self.bet_steps else 10000
                         self.state["kompen_level"] = 1
                         self.state["m_level"] = 1
-                        self._add_log(f"🛡️ SOFT BRAKE: Entropi {_ent:.2f} / Streak {_streak}x → Reset ke base Rp {self.bet_steps[0]:,}")
+                        self._add_log(f"🛡️ HARD BRAKE v36: Entropi {_ent:.2f} / Streak {_streak}x → Reset ke base Rp {self.bet_steps[0]:,}")
                     else:
                         calculated_next = int(last_bet * mult)
                         if calculated_next > max_bet:
@@ -6903,6 +6939,18 @@ class QuantumMonitor:
                 m_idx = m_level - 1
                 bet_amt = self.bet_steps[m_idx] if m_idx < len(self.bet_steps) else self.bet_steps[0]
             
+            # [FIX v36] ADAPTIVE BET SIZING — jangan naikkan bet saat chaos / conf rendah
+            _conf_v36 = float(pred.get("acc", 0) or 0)
+            _ent_v36 = float(self.brain.quantum_entropy)
+            _base_v36 = self.bet_steps[0] if self.bet_steps else 10000
+            if _ent_v36 > 2.65 or _conf_v36 < 60.0:
+                if bet_amt > _base_v36:
+                    self._add_log(f"🛡️ [v36 ADAPTIVE] Entropi {_ent_v36:.2f} / Conf {_conf_v36:.1f}% → Bet ditahan di base Rp {_base_v36:,}")
+                    bet_amt = _base_v36
+                    self.state["next_bet_amount"] = _base_v36
+                    self.state["kompen_level"] = 1
+                    self.state["m_level"] = 1
+            
             self.state["balance"] = int(self.virtual_balance)
             
             exists = False
@@ -7238,9 +7286,9 @@ class QuantumMonitor:
             res_icon = ""
             res_text = s.get("res", "")
             
-            if res_text == "WIN": res_icon = " ✅WIN"
-            elif res_text == "WIN-JP": res_icon = " 🔥WIN-JP"
-            elif res_text == "LOSE": res_icon = " ❌LOS"
+            if res_text == "WIN": res_icon = "WIN✅"
+            elif res_text == "WIN-JP": res_icon = "WIN-JP🔥"
+            elif res_text == "LOSE": res_icon = "LOS❌"
             elif res_text == "(waiting)": res_icon = " (waiting)"
             else: res_icon = f" {res_text}"
             
