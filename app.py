@@ -7227,7 +7227,7 @@ class QuantumMonitor:
             return f"{val}"
 
         for s in display_sigs:
-            p_short = str(s["period"])[-4:]
+            p_short = str(s["period"])[-2:]
             bk_label = s.get("bk", "---")
             bk_short = "BB" if bk_label == "Besar" else "KK"
             p_side = f"{bk_short}{s.get('num', '?')}"
@@ -7241,16 +7241,14 @@ class QuantumMonitor:
             res_icon = ""
             res_text = s.get("res", "")
             
-            if res_text == "WIN": res_icon = " \u2705WIN"
-            elif res_text == "WIN-JP": res_icon = " \U0001f525WIN-JP"
-            elif res_text == "LOSE": res_icon = " \u274cLOS"
+            if res_text == "WIN": res_icon = " ✅WIN"
+            elif res_text == "WIN-JP": res_icon = " 🔥WIN-JP"
+            elif res_text == "LOSE": res_icon = " ❌LOS"
             elif res_text == "(waiting)": res_icon = " (waiting)"
             else: res_icon = f" {res_text}"
             
-            # Format: {period_short} {CODE} {BET} {BALANCE} {ICON}
-            _lv = s.get("m_level_display", "")
-            _lv_str = f" LV{_lv}" if _lv and _lv > 1 else ""
-            body += f"{p_short} {p_side} {bet_fmt}{_lv_str} {bal_fmt}{res_icon}\n"
+            # PATCH: Format compact — tanpa LV display
+            body += f"{p_short} {p_side} {bet_fmt} {bal_fmt}{res_icon}\n"
         
         if not body: body = "Syncing Data Streams...\n"
         # [MONOSPACE] Bungkus body prediksi agar rata & rapi
@@ -7267,18 +7265,15 @@ class QuantumMonitor:
         if _channel_line:
             footer += f"<b>{_channel_line}</b>\n"
         
-        display_res_sigs = [s for s in display_sigs if s.get("res") not in ["(waiting)", "SCANNING..."]]
-        if display_res_sigs:
-            last_finished_sig = display_res_sigs[-1]
-            p_inf = last_finished_sig['period'][-4:]
-            info_val = last_finished_sig.get('win_info', '?')
-            _res = str(last_finished_sig.get("res", "")).upper()
+        # PATCH: Tampilkan hasil AKTUAL periode terakhir (WIN atau LOSE)
+        finished_sigs = [s for s in display_sigs if s.get("res") not in ["(waiting)", "SCANNING...", ""]]
+        if finished_sigs:
+            last_finished = finished_sigs[-1]
+            p_inf = str(last_finished['period'])[-4:]
+            info_val = last_finished.get('win_info', '?')
+            _res = str(last_finished.get("res", "")).upper()
             if _res == "WIN-JP":
-                footer += f"info JP periode {p_inf} : {info_val} \U0001f3c6\n"
-            elif _res == "WIN":
-                footer += f"info win periode {p_inf} : {info_val}\n"
-            elif _res == "LOSE":
-                footer += f"info lose periode {p_inf} : {info_val}\n"
+                footer += f"info hasil periode {p_inf} : {info_val} 🏆\n"
             else:
                 footer += f"info hasil periode {p_inf} : {info_val}\n"
         
