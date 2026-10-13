@@ -106,16 +106,16 @@ class QuantumBrain:
         
         # [AI-LEARN v1] Method performance tracker
         self.method_scores = {
-            "markov": {"win": 0, "lose": 0, "weight": 1.0},
-            "markov_high": {"win": 0, "lose": 0, "weight": 1.0},
-            "bayesian": {"win": 0, "lose": 0, "weight": 1.0},
-            "tema": {"win": 0, "lose": 0, "weight": 1.0},
-            "kalman": {"win": 0, "lose": 0, "weight": 1.0},
-            "fourier": {"win": 0, "lose": 0, "weight": 1.0},
-            "knn": {"win": 0, "lose": 0, "weight": 1.0},
-            "holt_winters": {"win": 0, "lose": 0, "weight": 1.0},
-            "fuzzy": {"win": 0, "lose": 0, "weight": 1.0},
-            "pattern": {"win": 0, "lose": 0, "weight": 1.0},
+            "markov": {"win": 0, "lose": 0, "weight": 1.0, "recent_win": 0, "recent_lose": 0, "recent_decay": 0.0},
+            "markov_high": {"win": 0, "lose": 0, "weight": 1.0, "recent_win": 0, "recent_lose": 0, "recent_decay": 0.0},
+            "bayesian": {"win": 0, "lose": 0, "weight": 1.0, "recent_win": 0, "recent_lose": 0, "recent_decay": 0.0},
+            "tema": {"win": 0, "lose": 0, "weight": 1.0, "recent_win": 0, "recent_lose": 0, "recent_decay": 0.0},
+            "kalman": {"win": 0, "lose": 0, "weight": 1.0, "recent_win": 0, "recent_lose": 0, "recent_decay": 0.0},
+            "fourier": {"win": 0, "lose": 0, "weight": 1.0, "recent_win": 0, "recent_lose": 0, "recent_decay": 0.0},
+            "knn": {"win": 0, "lose": 0, "weight": 1.0, "recent_win": 0, "recent_lose": 0, "recent_decay": 0.0},
+            "holt_winters": {"win": 0, "lose": 0, "weight": 1.0, "recent_win": 0, "recent_lose": 0, "recent_decay": 0.0},
+            "fuzzy": {"win": 0, "lose": 0, "weight": 1.0, "recent_win": 0, "recent_lose": 0, "recent_decay": 0.0},
+            "pattern": {"win": 0, "lose": 0, "weight": 1.0, "recent_win": 0, "recent_lose": 0, "recent_decay": 0.0},
         }
         # [AI-LEARN v1] Regime-based best method cache
         self.regime_best = {
@@ -180,17 +180,39 @@ class QuantumBrain:
         except: pass
 
     def _recalculate_method_weights(self):
-        """[AI-LEARN v1] Hitung ulang bobot tiap method berdasarkan win-rate historis."""
+        """[v43] Hitung ulang bobot dengan penalty lebih agresif untuk WR rendah."""
         for m_name, m_data in self.method_scores.items():
             total = m_data["win"] + m_data["lose"]
             if total < 5:
                 continue  # Belum cukup data, biarkan weight default
             wr = m_data["win"] / total
-            # Weight = 0.3 (min) sampai 2.5 (max), scaling dari win-rate
-            # WR 50% → weight 1.0 ; WR 70% → weight 1.9 ; WR 30% → weight 0.5
-            new_w = max(0.3, min(2.5, (wr - 0.25) * 2.5))
+            
+            # [v43] Formula baru dengan penalty lebih tajam:
+            # WR 50% → weight 1.0 ; WR 55% → 1.35 ; WR 45% → 0.65
+            # WR 40% → 0.4 ; WR 60% → 1.7 ; WR 30% → 0.3
+            if wr >= 0.60:
+                new_w = 1.5 + (wr - 0.60) * 3.5   # Bonus untuk WR tinggi
+            elif wr >= 0.50:
+                new_w = 1.0 + (wr - 0.50) * 3.5   # Normal
+            else:
+                new_w = max(0.25, (wr - 0.25) * 3.0)  # Penalty agresif
+            
+            # [v43] Tambahan: kalau sample > 100, weight lebih dipercaya
+            if total > 100:
+                # Extreme: WR < 45% → potong ke 0.3
+                if wr < 0.45:
+                    new_w = 0.30
+                # Extreme: WR > 55% → boost ke 1.5+
+                elif wr > 0.55:
+                    new_w = max(new_w, 1.5)
+            
             m_data["weight"] = round(new_w, 3)
-        self._log(f"[AI-LEARN] Method weights recalculated. Sample markov: {self.method_scores['markov']['weight']}")
+        
+        # Log top 3 method
+        _sorted = sorted(self.method_scores.items(), key=lambda x: x[1]["weight"], reverse=True)
+        _top3 = ", ".join([f"{n}:{d['weight']:.2f}" for n, d in _sorted[:3]])
+        _bot3 = ", ".join([f"{n}:{d['weight']:.2f}" for n, d in _sorted[-3:]])
+        self._log(f"[v43] TOP: {_top3} | BOTTOM: {_bot3}")
 
     def _save_learned_memory(self):
         """[AI-LEARN v1] Simpan bobot yang sudah dipelajari ke disk."""
@@ -446,8 +468,17 @@ class QuantumBrain:
                 _method_aligned = (_m_vote == _winner_dir)
                 if was_correct and _method_aligned:
                     self.method_scores[_m_name]["win"] += 1
+                    self.method_scores[_m_name]["recent_win"] = self.method_scores[_m_name].get("recent_win", 0) + 1
                 elif not was_correct and _method_aligned:
                     self.method_scores[_m_name]["lose"] += 1
+                    self.method_scores[_m_name]["recent_lose"] = self.method_scores[_m_name].get("recent_lose", 0) + 1
+                
+                # [v43] Decay recent counter setiap 100 feedback (data lama dikurangi pengaruhnya)
+                _rw = self.method_scores[_m_name].get("recent_win", 0)
+                _rl = self.method_scores[_m_name].get("recent_lose", 0)
+                if _rw + _rl > 100:
+                    self.method_scores[_m_name]["recent_win"] = int(_rw * 0.7)
+                    self.method_scores[_m_name]["recent_lose"] = int(_rl * 0.7)
             
             _phase = _snap.get("phase", "UNKNOWN")
             if _phase in self.regime_best and was_correct:
@@ -624,9 +655,10 @@ class QuantumBrain:
                 is_dragon_fracture = True
                 broken_dragon_side = prev_streak_side
                 broken_dragon_len = prev_streak_len
-                # v37: Ikuti sisi baru (last_side) yang memecah naga
-                fracture_recovery_side = last_side
-                fracture_dead_side = prev_streak_side
+                # v42: REVERT ke trend awal (prev_streak_side)
+                # Bukti audit: naga 3x+ putus, market resume ke trend awal (60-70% akurat)
+                fracture_recovery_side = prev_streak_side
+                fracture_dead_side = last_side
                 
         # Calculate stagnant consecutive identical number length (e.g. 4-4-4-4)
         stagnant_len = 0
@@ -1971,6 +2003,23 @@ class QuantumBrain:
             elif final_side_key == "K" and target_jp_num >= 5:
                 target_jp_num = 0 if is_violet_storm_lock else 3
 
+        # GATE 2.7: [v42] CHOPPY MARKET GUARD (D:1 Z:1)
+        # Saat dragon=1 dan zigzag=1, market ranging. JANGAN flip, ikuti momentum.
+        _d_count = patterns.get("dragon", 0)
+        _z_count = patterns.get("zigzag", 0)
+        if _d_count == 1 and _z_count == 1 and len(history_nums) >= 3:
+            _last_side_choppy = "B" if history_nums[-1] >= 5 else "K"
+            final_side_key = _last_side_choppy
+            final_side = "BESAR" if final_side_key == "B" else "KECIL"
+            # Paksa confidence rendah di choppy
+            confidence = min(confidence, 55.0)
+            self._log(f"[v42 CHOPPY GUARD] D:1 Z:1 detected → momentum follow '{final_side}' (confidence forced low).")
+            # JP number ikut side
+            if final_side_key == "B" and target_jp_num < 5:
+                target_jp_num = 7
+            elif final_side_key == "K" and target_jp_num >= 5:
+                target_jp_num = 2
+
         # GATE 3: KUNCI WAVE PING-PONG RADAR
         zigzag_streak = 0
         if not is_dragon_rider_active and not is_pola_22_lock and stagnant_twin_streak < 2 and len(history_nums) >= 2:
@@ -1982,12 +2031,20 @@ class QuantumBrain:
                     break
                     
         is_pingpong_lock = False
-        if zigzag_streak >= 3 and not is_pola_22_lock:
+        # v42: Zigzag >= 4 = siap collapse, JANGAN flip
+        if zigzag_streak >= 4 and not is_pola_22_lock:
+            is_pingpong_lock = True
+            # Collapse mode: ikuti momentum terakhir, bukan flip
+            last_actual_side = "B" if history_nums[-1] >= 5 else "K"
+            final_side_key = last_actual_side  # ← IKUTI momentum, bukan flip
+            final_side = "BESAR" if final_side_key == "B" else "KECIL"
+            self._log(f"[v42 ZIGZAG COLLAPSE GUARD] Zigzag {zigzag_streak} → collapse imminent. Follow last side '{final_side}'.")
+        elif zigzag_streak >= 3 and not is_pola_22_lock:
             is_pingpong_lock = True
             last_actual_side = "B" if history_nums[-1] >= 5 else "K"
             final_side_key = "K" if last_actual_side == "B" else "B"
             final_side = "BESAR" if final_side_key == "B" else "KECIL"
-            self._log(f"[PREMIUM SHIELD] PING-PONG RADAR ACTIVE: Zigzag streak {zigzag_streak}. Locking alternating forecast to {final_side}.")
+            self._log(f"[v42 PING-PONG RADAR] Zigzag {zigzag_streak}. Alternating forecast {final_side}.")
             if final_side_key == "B" and target_jp_num < 5:
                 target_jp_num = 5 if is_violet_storm_lock else 8
             elif final_side_key == "K" and target_jp_num >= 5:
