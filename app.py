@@ -6549,13 +6549,24 @@ class QuantumMonitor:
                     last_bet = int(sig.get("bet", 0)) or (self.bet_steps[0] if self.bet_steps else 10000)
                     mult = float(self.state.get("kompen_multiplier", 3.0))
                     max_bet = int(self.state.get("kompen_max_bet", 21870000))
-                    calculated_next = int(last_bet * mult)
-                    if calculated_next > max_bet:
-                        calculated_next = max_bet
-                        self._add_log(f"⚠️ CAP: next bet ditahan di max Rp {max_bet:,}")
-                    self.state["next_bet_amount"] = calculated_next
-                    self.state["kompen_level"] += 1
-                    self.state["m_level"] = self.state["kompen_level"]
+
+                    # --- PATCH: SOFT MARTINGALE BRAKE (ANTI-RUNGKAD) ---
+                    _ent = float(self.brain.quantum_entropy)
+                    _streak = int(self.state["stats"].get("current_lose_streak", 0))
+                    if _ent > 2.85 or _streak >= 3:
+                        self.state["next_bet_amount"] = self.bet_steps[0] if self.bet_steps else 10000
+                        self.state["kompen_level"] = 1
+                        self.state["m_level"] = 1
+                        self._add_log(f"🛡️ SOFT BRAKE: Entropi {_ent:.2f} / Streak {_streak}x → Reset ke base Rp {self.bet_steps[0]:,}")
+                    else:
+                        calculated_next = int(last_bet * mult)
+                        if calculated_next > max_bet:
+                            calculated_next = max_bet
+                            self._add_log(f"⚠️ CAP: next bet ditahan di max Rp {max_bet:,}")
+                        self.state["next_bet_amount"] = calculated_next
+                        self.state["kompen_level"] += 1
+                        self.state["m_level"] = self.state["kompen_level"]
+                    # --- END PATCH ---
                     self._record_loss_telemetry(sig, v)
                     self._add_log(f"SIGNAL HIT {p_str[-4:]}: LOSE \u274c | [KOMPEN {mult}x] Rp {last_bet:,} → Rp {calculated_next:,} (LV{self.state['kompen_level']})")
                 
