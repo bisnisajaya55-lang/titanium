@@ -7235,9 +7235,6 @@ class QuantumMonitor:
             bet_amt = s.get("bet", 0)
             bet_fmt = format_idr(bet_amt)
             
-            bal_val = s.get("balance", self.virtual_balance)
-            bal_fmt = format_idr(bal_val)
-            
             res_icon = ""
             res_text = s.get("res", "")
             
@@ -7247,14 +7244,25 @@ class QuantumMonitor:
             elif res_text == "(waiting)": res_icon = " (waiting)"
             else: res_icon = f" {res_text}"
             
-            # PATCH: Format compact — tanpa LV display
-            body += f"{p_short} {p_side} {bet_fmt} {bal_fmt}{res_icon}\n"
+            # PATCH: Hapus kolom saldo — body lebih pendek
+            body += f"{p_short} {p_side} {bet_fmt}{res_icon}\n"
         
         if not body: body = "Syncing Data Streams...\n"
         # [MONOSPACE] Bungkus body prediksi agar rata & rapi
         body = "<code>" + body.rstrip() + "</code>\n"
 
         footer = "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+        # PATCH: Saldo REAL dari web scraping (bukan virtual simulasi)
+        try:
+            # Prioritas: state["balance"] (diupdate dari real_balance web)
+            _saldo_real = self.state.get("balance")
+            if _saldo_real is None or _saldo_real == 0:
+                _saldo_real = self.virtual_balance
+            _saldo_int = int(_saldo_real)
+            _saldo_fmt = f"{_saldo_int:,}".replace(",", ".")
+        except Exception:
+            _saldo_fmt = "0"
+        footer += f"Saldo : {_saldo_fmt}\n"
         # Session Stats
         win_c = self.state["stats"].get("win", 0)
         los_c = self.state["stats"].get("lose", 0)
