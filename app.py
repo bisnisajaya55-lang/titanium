@@ -4942,6 +4942,115 @@ class QuantumMonitor:
                         url = self.driver.current_url
                 except:
                     raise Exception("no such window: target window already closed")
+                
+                # ============================================================
+                # [v41 MODE DRIFT GUARD] Cek apakah masih di mode yang benar
+                # ============================================================
+                try:
+                    _now_dg = time.time()
+                    _last_dg_check = getattr(self, "_last_drift_check", 0)
+                    if _now_dg - _last_dg_check > 30:  # Cek tiap 30 detik
+                        self._last_drift_check = _now_dg
+                        _target_mode = _load_owner_settings_local().get("force_mode", "1m")
+                        _mode_id_map_dg = {"30s": "0", "1m": "1", "3m": "3", "5m": "5"}
+                        _target_id = _mode_id_map_dg.get(_target_mode, "1")
+                        
+                        # Deteksi apakah URL saat ini masih mode target
+                        _url_low = url.lower()
+                        _url_is_target = False
+                        if _target_mode == "1m" and ("id=1" in _url_low or "id%3d1" in _url_low):
+                            _url_is_target = True
+                        elif _target_mode == "30s" and ("id=0" in _url_low or "id%3d0" in _url_low):
+                            _url_is_target = True
+                        elif _target_mode == "3m" and ("id=3" in _url_low or "id%3d3" in _url_low):
+                            _url_is_target = True
+                        elif _target_mode == "5m" and ("id=5" in _url_low or "id%3d5" in _url_low):
+                            _url_is_target = True
+                        
+                        # Cek juga mode di DOM (aktif tab)
+                        _dom_mode_dg = None
+                        try:
+                            with self.lock:
+                                _dom_mode_dg = self.driver.execute_script("""
+                                    try {
+                                        let activeTabs = document.querySelectorAll('.van-tab--active, .van-tab.active, [class*="active"][class*="tab"]');
+                                        for (let tab of activeTabs) {
+                                            let t = (tab.innerText || '').toLowerCase();
+                                            if (t.includes('30s') || t.includes('30 detik')) return '30';
+                                            if (t.includes('1min') || t.includes('1 min') || t.includes('1 menit') || t === '1m') return '60';
+                                            if (t.includes('3min') || t.includes('3 menit')) return '180';
+                                            if (t.includes('5min') || t.includes('5 menit')) return '300';
+                                        }
+                                    } catch(e) {}
+                                    return null;
+                                """)
+                        except: pass
+                        
+                        _expected_dom_code = {"30s": "30", "1m": "60", "3m": "180", "5m": "300"}.get(_target_mode, "60")
+                        _is_drift = False
+                        
+                        # Jika DOM menunjukkan mode berbeda dari target → drift!
+                        if _dom_mode_dg and _dom_mode_dg != _expected_dom_code:
+                            _is_drift = True
+                            self._add_log(f"🚨 [DRIFT GUARD] DOM mode = {_dom_mode_dg}s, target = {_expected_dom_code}s. AUTO-RECOVER!")
+                        # Jika URL mode berbeda → drift!
+                        elif not _url_is_target and "wingo" in _url_low:
+                            _is_drift = True
+                            self._add_log(f"🚨 [DRIFT GUARD] URL tidak sesuai target mode. AUTO-RECOVER!")
+                        
+                        if _is_drift:
+                            # Hitung navigasi balik
+                            _base_url = "https://www.nuxpira.com"
+                            if "/#/" in url:
+                                _base_url = url.split("/#/")[0]
+                            _target_url = f"{_base_url}/#/home/AllLotteryGames/WinGo?id={_target_id}"
+                            
+                            self._add_log(f"🔄 [DRIFT GUARD] Kembali ke mode {_target_mode.upper()}: {_target_url}")
+                            try:
+                                with self.lock:
+                                    self.driver.get(_target_url)
+                                time.sleep(3)
+                                # Klik tab target setelah load
+                                _targets_tab = {
+                                    "30s": ["30s", "30 s", "30sec"],
+                                    "1m": ["1m", "1 min", "1menit", "1 menit"],
+                                    "3m": ["3m", "3 min", "3menit"],
+                                    "5m": ["5m", "5 min", "5menit"]
+                                }.get(_target_mode, ["1m"])
+                                with self.lock:
+                                    self.driver.execute_script("""
+                                        (function(){
+                                            var targets = arguments[0];
+                                            var all = document.querySelectorAll('.van-tab, [role="tab"]');
+                                            for (var k=0;k<all.length;k++){
+                                                var t = (all[k].innerText||'').toLowerCase();
+                                                if (t.length > 25 || t.length === 0) continue;
+                                                for (var m=0;m<targets.length;m++){
+                                                    if (t.indexOf(targets[m]) > -1){
+                                                        try{ all[k].click(); }catch(e){}
+                                                        try{ 
+                                                            var evt = new MouseEvent('click', {bubbles:true, cancelable:true, view:window}); 
+                                                            all[k].dispatchEvent(evt); 
+                                                        }catch(e){}
+                                                    }
+                                                }
+                                            }
+                                        })(arguments[0]);
+                                    """, _targets_tab)
+                                self._add_log(f"✅ [DRIFT GUARD] Berhasil kembali ke mode {_target_mode.upper()}")
+                                # Reset state agar mulai fresh
+                                self.state["history"] = []
+                                self.processed_p = set()
+                                self.state["prediction"] = None
+                                self.state["active_p"] = None
+                                self.last_sync_time = time.time()
+                                # Set flag untuk skip 1 loop
+                                time.sleep(5)
+                            except Exception as _dg_e:
+                                self._add_log(f"⚠️ [DRIFT GUARD] Navigate error: {_dg_e}")
+                except Exception as _dg_outer:
+                    pass  # Silent fail
+                # ============================================================
 
                 # ============================================================
                 # [WORKFLOW v2] AUTO-NAV v3 DISABLED
@@ -5404,9 +5513,11 @@ class QuantumMonitor:
                 except: pass
                 self.state["timer"] = timer_text
 
-                # --- AUTO-SCROLL ANTI-STUCK ENGINE (24/7 BROWSER KEEP-ALIVE) ---
+                # --- AUTO-SCROLL ANTI-STUCK ENGINE (24/7 BROWSER KEEP-ALIVE v41) ---
+                # v41: interval diturunkan 90 → 45 detik untuk keep-alive lebih responsif
                 now_scroll = time.time()
-                if getattr(self, "auto_scroll_enabled", True) and (now_scroll - getattr(self, "last_auto_scroll_time", 0) >= getattr(self, "auto_scroll_interval", 90)):
+                _scroll_interval_v41 = min(getattr(self, "auto_scroll_interval", 45), 45)
+                if getattr(self, "auto_scroll_enabled", True) and (now_scroll - getattr(self, "last_auto_scroll_time", 0) >= _scroll_interval_v41):
                     # Strictly guard: NEVER scroll during critical 15s countdown, roll phase, or when timer is 00:00
                     secs_left = 30
                     if ":" in timer_text:
@@ -6035,17 +6146,78 @@ class QuantumMonitor:
                     for m in regex_matches:
                         if self._on_result(m.group(1), int(m.group(2))): sync_ok = True
 
-                if len(self.state["history"]) >= 1:
-                    # WATCHDOG: If no new data for watch_limit seconds, force refresh
-                    # Increased to 150s to prevent unnecessary reloads as requested (disabled in safe_play_mode)
-                    if not getattr(self, "safe_play_mode", False) and time.time() - self.last_sync_time > 150:
-                        self._add_log("HEARTBEAT ALERT: Neural stall detected. Force Refresh initiated.")
+                # [v41 WATCHDOG] Cek stuck & auto-recovery
+                _no_data_seconds = time.time() - self.last_sync_time
+                
+                # LEVEL 1: Refresh kalau stuck > 90 detik
+                if not getattr(self, "safe_play_mode", False) and _no_data_seconds > 90 and _no_data_seconds <= 180:
+                    self._add_log(f"⏰ [WATCHDOG L1] No data for {int(_no_data_seconds)}s. Refresh browser...")
+                    try:
+                        with self.lock:
+                            self.driver.refresh()
+                        time.sleep(5)
+                        self.last_sync_time = time.time()
+                        self._add_log("✅ [WATCHDOG L1] Refresh sukses, tunggu sync...")
+                    except Exception as _wd_e:
+                        self._add_log(f"⚠️ [WATCHDOG L1] Error: {_wd_e}")
+                
+                # LEVEL 2: Auto-navigate + re-sync kalau stuck > 180 detik
+                elif not getattr(self, "safe_play_mode", False) and _no_data_seconds > 180:
+                    self._add_log(f"🚨 [WATCHDOG L2] No data for {int(_no_data_seconds)}s. FULL RECOVERY!")
+                    try:
+                        # Force navigate ke mode target
+                        _target_mode_wd = _load_owner_settings_local().get("force_mode", "1m")
+                        _mode_id_wd = {"30s": "0", "1m": "1", "3m": "3", "5m": "5"}.get(_target_mode_wd, "1")
+                        _base_url_wd = "https://www.nuxpira.com"
                         try:
-                            with self.lock:
-                                self.driver.refresh()
-                            self._add_log("Browser Refresh Triggered. Re-syncing...")
+                            _cur_u = self.driver.current_url
+                            if "/#/" in _cur_u:
+                                _base_url_wd = _cur_u.split("/#/")[0]
                         except: pass
-                        self.last_sync_time = time.time() # Reset to give it time after refresh
+                        _target_url_wd = f"{_base_url_wd}/#/home/AllLotteryGames/WinGo?id={_mode_id_wd}"
+                        
+                        with self.lock:
+                            self.driver.get(_target_url_wd)
+                        time.sleep(4)
+                        
+                        # Klik tab target
+                        _targets_tab_wd = {
+                            "30s": ["30s", "30 s"], "1m": ["1m", "1 min", "1 menit"],
+                            "3m": ["3m", "3 min"], "5m": ["5m", "5 min"]
+                        }.get(_target_mode_wd, ["1m"])
+                        with self.lock:
+                            self.driver.execute_script("""
+                                (function(){
+                                    var targets = arguments[0];
+                                    var all = document.querySelectorAll('.van-tab, [role="tab"]');
+                                    for (var k=0;k<all.length;k++){
+                                        var t = (all[k].innerText||'').toLowerCase();
+                                        if (t.length > 25) continue;
+                                        for (var m=0;m<targets.length;m++){
+                                            if (t.indexOf(targets[m]) > -1){
+                                                try{ all[k].click(); }catch(e){}
+                                                try{ all[k].dispatchEvent(new MouseEvent('click', {bubbles:true})); }catch(e){}
+                                            }
+                                        }
+                                    }
+                                })(arguments[0]);
+                            """, _targets_tab_wd)
+                        time.sleep(3)
+                        
+                        # Reset state untuk re-sync dari awal
+                        self.processed_p = set()
+                        self.state["history"] = []
+                        self.state["prediction"] = None
+                        self.state["active_p"] = None
+                        self.state["active_sig"] = None
+                        self.last_sync_time = time.time()
+                        self._add_log(f"✅ [WATCHDOG L2] Recovery selesai, mode {_target_mode_wd.upper()} aktif kembali")
+                    except Exception as _wd2_e:
+                        self._add_log(f"⚠️ [WATCHDOG L2] Error: {_wd2_e}")
+                        self.last_sync_time = time.time()  # Reset to avoid loop
+                
+                if len(self.state["history"]) >= 1:
+                    self.state["status"] = "CONNECTED (SYNCED 24/7)"
                     
                     self.state["status"] = "CONNECTED (SYNCED 24/7)"
                     force_by_timer = False
