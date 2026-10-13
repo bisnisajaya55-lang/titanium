@@ -1,4 +1,3 @@
-# AUTO-PULL TEST v2
 # -*- coding: utf-8 -*-
 """
 OTAK TITANIUM QUANTUM HORIZON v5.2 (Titan 9.2 Stable)
@@ -152,7 +151,7 @@ class QuantumBrain:
 
         # 3. Detect Extreme Market Entropy (Chaos)
         if self.market_phase == "MAX_CHAOS" or self.quantum_entropy > 2.80:
-            return "ENTROPI_BERLEBIH", "Volatilitas ekstrem (Entropy > 2.80). Selaraskan dengan tren lokal & kurangi counter-trade spekulatif."
+            return "ENTROPI_BERLEBIH", "STOP_MARTINGALE: Volatilitas ekstrem (Entropy > 2.80). Wajib bet minimal, jangan naikkan level!"
         
         if self.market_phase == "CHAOTIC" or self.quantum_entropy > 2.45:
             return "GANGGUAN_POLA", "Filter noise aktif. Selaraskan konsensus voting & ikuti pola gelombang terdekat."
@@ -835,6 +834,11 @@ class QuantumBrain:
             self.market_phase = "TRENDING"
         elif patterns.get("zigzag", 0) >= 3:
             self.market_phase = "ZIGZAG_MOMENTUM"
+                # --- PATCH 3: PATTERN PRIORITY OVERRIDE ---
+        elif self.quantum_entropy > 2.70:
+            self.market_phase = "CHAOTIC" 
+            self._log("PATTERN PRIORITY: Entropi tinggi. Beralih ke mode CHAOTIC (hati-hati).")
+        # --- END PATCH 3 ---
         elif is_violet_trap:
             self.market_phase = "VIOLET_TRANSITION"  # Force VIOLET_TRANSITION phase for stabilization
         elif self.jp_resonance_count > 8 and self.loss_counter == 0:
@@ -1720,9 +1724,9 @@ class QuantumBrain:
 
         # CHAOS BRAKING GATE: Prevent Overconfidence in high entropy (Directly check quantum_entropy)
         if self.quantum_entropy > 2.70 or self.market_phase == "MAX_CHAOS":
-            confidence = min(58.5, confidence * 0.45) # Lowered for Titan 8.7 honesty
+            cconfidence = min(52.0, confidence * 0.35) # Patch: Diturunkan saat chaos # Lowered for Titan 8.7 honesty
         elif self.market_phase == "VIOLET_TRANSITION":
-            confidence = min(62.5, confidence * 0.50)  # Heavily brake confidence on purple 0/5 zones
+            confidence = min(58.0, confidence * 0.45) # Patch: Diturunkan saat zona 0/5  # Heavily brake confidence on purple 0/5 zones
         elif self.quantum_entropy > 2.35 or self.market_phase == "CHAOTIC":
             confidence = min(72.5, confidence * 0.65) 
         
