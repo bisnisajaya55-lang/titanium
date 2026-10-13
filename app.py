@@ -6585,26 +6585,46 @@ class QuantumMonitor:
                     mult = float(self.state.get("kompen_multiplier", 3.0))
                     max_bet = int(self.state.get("kompen_max_bet", 21870000))
 
-                    # --- PATCH v36: HARD MARTINGALE BRAKE (ANTI-RUNGKAD KUAT) ---
-                    # Threshold diturunkan: entropy > 2.65 ATAU streak >= 2 → paksa reset
+                    # --- v39 KOMPEN MODE: WAJIB NAIK 3x SAMPAI CAP ---
+                    # Aturan: LOS → naikkan taruhan 3x (tanpa reset).
+                    # Reset HANYA saat streak >= 5 (circuit breaker darurat).
                     _ent = float(self.brain.quantum_entropy)
                     _streak = int(self.state["stats"].get("current_lose_streak", 0))
-                    if _ent > 2.65 or _streak >= 2:
+                    
+                    # Circuit breaker: reset HANYA kalau streak >= 5 (bukan 2)
+                    _emergency_reset = (_streak >= 5)
+                    
+                    # Multiplier adaptif: 
+                    # - Entropy rendah/normal (<= 2.5) → 3x (full aggressive)
+                    # - Entropy menengah (2.5-2.8) → 2x (moderat)
+                    # - Entropy tinggi (> 2.8) → 1.5x (tetap naik, tapi lebih hati-hati)
+                    if _ent <= 2.5:
+                        _effective_mult = float(mult)  # pakai multiplier setting (3x)
+                    elif _ent <= 2.8:
+                        _effective_mult = max(2.0, float(mult) - 1.0)  # 2x
+                    else:
+                        _effective_mult = 1.5  # tetap naik tapi konservatif
+                    
+                    if _emergency_reset:
+                        # Circuit breaker darurat: streak >= 5
                         self.state["next_bet_amount"] = self.bet_steps[0] if self.bet_steps else 10000
                         self.state["kompen_level"] = 1
                         self.state["m_level"] = 1
-                        self._add_log(f"🛡️ HARD BRAKE v36: Entropi {_ent:.2f} / Streak {_streak}x → Reset ke base Rp {self.bet_steps[0]:,}")
+                        calculated_next = self.state["next_bet_amount"]
+                        self._add_log(f"🚨 CIRCUIT BREAKER: Streak {_streak}x LOSE → Emergency reset ke base Rp {calculated_next:,}")
                     else:
-                        calculated_next = int(last_bet * mult)
+                        # WAJIB NAIK sesuai plan (3x), di-cap max
+                        calculated_next = int(last_bet * _effective_mult)
                         if calculated_next > max_bet:
                             calculated_next = max_bet
-                            self._add_log(f"⚠️ CAP: next bet ditahan di max Rp {max_bet:,}")
+                            self._add_log(f"⚠️ CAP: Bet ditahan di max Rp {max_bet:,} (multi {_effective_mult}x)")
                         self.state["next_bet_amount"] = calculated_next
                         self.state["kompen_level"] += 1
                         self.state["m_level"] = self.state["kompen_level"]
+                        self._add_log(f"📈 KOMPEN v39: LV{self.state['kompen_level']} | Entropi {_ent:.2f} → Multi {_effective_mult}x | Rp {last_bet:,} → Rp {calculated_next:,}")
                     # --- END PATCH ---
                     self._record_loss_telemetry(sig, v)
-                    self._add_log(f"SIGNAL HIT {p_str[-4:]}: LOSE \u274c | [KOMPEN {mult}x] Rp {last_bet:,} → Rp {calculated_next:,} (LV{self.state['kompen_level']})")
+                    self._add_log(f"SIGNAL HIT {p_str[-4:]}: LOSE \u274c | [KOMPEN v39] Rp {last_bet:,} → Rp {self.state.get('next_bet_amount', last_bet):,} (LV{self.state.get('kompen_level', 1)})")
                 
                 sig["win_info"] = win_info
                 sig["balance"] = self.virtual_balance
