@@ -6568,16 +6568,69 @@ class QuantumMonitor:
                 except:
                     pass
 
-            # [FINAL] Filter periode sesuai mode_raw agar tidak kontaminasi silang
+            # [v45] Deteksi mode dari data yang di-scrape, bukan dari mode_raw (yang bisa stale)
             try:
-                _mr_ds = str(self.state.get("mode_raw", "60"))
-                _code_ds = {"30": "10005", "60": "10001", "180": "10002", "300": "10003"}.get(_mr_ds, "10001")
-                _filtered = {k: v for k, v in all_scraped.items() if len(k) >= 13 and k[8:13] == _code_ds}
-                _dropped = len(all_scraped) - len(_filtered)
-                if _dropped > 0:
-                    self._add_log(f"🔍 [DEEP SCAN] Filter mode {_mr_ds}: {len(_filtered)} masuk, {_dropped} dari mode lain dibuang.")
-                all_scraped = _filtered
-            except: pass
+                if all_scraped:
+                    # Hitung kode mode dari sampel data
+                    _mode_counts = {}
+                    for _k in all_scraped.keys():
+                        if len(_k) >= 13:
+                            _code = _k[8:13]
+                            _mode_counts[_code] = _mode_counts.get(_code, 0) + 1
+                    if _mode_counts:
+                        # Ambil kode mode dominan dari data
+                        _dominant_code = max(_mode_counts, key=_mode_counts.get)
+                        _mode_names = {"10005": "30s", "10001": "1m", "10002": "3m", "10003": "5m"}
+                        _detected_mode = _mode_names.get(_dominant_code, "unknown")
+                        self._add_log(f"🔍 [v45 DEEP SCAN] Terdeteksi mode dominan: {_detected_mode} ({_mode_counts[_dominant_code]} periode)")
+                        
+                        # Kalau mode dominan BUKAN 1m → fix state dan navigate balik
+                        if _dominant_code != "10001":
+                            self._add_log(f"🚨 [v45] Mode dominan bukan 1m! Force navigate ke 1m...")
+                            self.state["mode_raw"] = "60"
+                            self.state["current_mode"] = "MODE: 1 MIN"
+                            self.state["active_sig"] = datetime.now().strftime("%Y%m%d") + "10001"
+                            # Navigate paksa ke 1m
+                            try:
+                                _base_v45 = "https://www.nuxpira.com"
+                                try:
+                                    _cur_v45 = self.driver.current_url
+                                    if "/#/" in _cur_v45:
+                                        _base_v45 = _cur_v45.split("/#/")[0]
+                                except: pass
+                                with self.lock:
+                                    self.driver.get(f"{_base_v45}/#/home/AllLotteryGames/WinGo?id=1")
+                                time.sleep(4)
+                                # Klik tab 1m
+                                with self.lock:
+                                    self.driver.execute_script("""
+                                        (function(){
+                                            var targets = ["1m","1 min","1menit"];
+                                            var all = document.querySelectorAll('.van-tab, [role="tab"]');
+                                            for (var k=0;k<all.length;k++){
+                                                var t = (all[k].innerText||'').toLowerCase();
+                                                if (t.length > 25) continue;
+                                                for (var m=0;m<targets.length;m++){
+                                                    if (t.indexOf(targets[m]) > -1){
+                                                        try{ all[k].click(); }catch(e){}
+                                                        try{ all[k].dispatchEvent(new MouseEvent('click',{bubbles:true})); }catch(e){}
+                                                    }
+                                                }
+                                            }
+                                        })();
+                                    """)
+                                self._add_log(f"✅ [v45] Navigate ke 1m selesai, tunggu sync...")
+                            except Exception as _nv45:
+                                self._add_log(f"⚠️ [v45] Navigate error: {_nv45}")
+                        
+                        # Filter sesuai mode dominan (bukan mode_raw)
+                        _filtered = {k: v for k, v in all_scraped.items() if len(k) >= 13 and k[8:13] == _dominant_code}
+                        _dropped = len(all_scraped) - len(_filtered)
+                        if _dropped > 0:
+                            self._add_log(f"🔍 [v45 DEEP SCAN] Pakai mode {_detected_mode}: {len(_filtered)} masuk, {_dropped} dari mode lain dibuang.")
+                        all_scraped = _filtered
+            except Exception as _ds45:
+                self._add_log(f"⚠️ [v45] Filter error: {_ds45}")
             
             # Process all gathered data chronologically ascending (oldest period first)
             sorted_periods = sorted(all_scraped.keys(), key=lambda x: int(x))
