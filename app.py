@@ -7907,7 +7907,7 @@ def trigger_deep_scan():
 def reset_sync_soft():
     """[HARD SYNC v2] Reset total + navigate paksa + klik tab + deep scan."""
     try:
-        data = request.json or {}
+        data = request.get_json(silent=True) or {}
         _target_mode = str(data.get("mode", "1m")).strip().lower()
         _mode_id_map = {"30s": "0", "1m": "1", "3m": "3", "5m": "5"}
         _mode_sec_map = {"30s": "30", "1m": "60", "3m": "180", "5m": "300"}
@@ -8478,7 +8478,7 @@ def _auto_login_55five():
 def api_save_55five_login():
     """[PHASE 1a] Simpan kredensial auto-login 55five."""
     try:
-        data = request.json or {}
+        data = request.get_json(silent=True) or {}
         admin_key = str(data.get("key", "")).strip()
         OWNER_MASTER_KEY = _APP_SECRETS.get("OWNER_MASTER_KEY", "")
         if admin_key != OWNER_MASTER_KEY:
@@ -9453,7 +9453,7 @@ def api_settings_get_local():
 def api_settings_update_local():
     """[FORCE MODE] Update owner settings — khususnya force_mode."""
     try:
-        data = request.json or {}
+        data = request.get_json(silent=True) or {}
         admin_key = request.args.get('key', '')
         OWNER_MASTER_KEY = _APP_SECRETS.get("OWNER_MASTER_KEY", "")
         # Izinkan owner via key, atau via header X-Admin-Pass
@@ -9466,7 +9466,7 @@ def api_settings_update_local():
         current = _load_owner_settings_local()
         
         if "force_mode" in data:
-            mode = str(data["force_mode"]).strip().lower()
+            mode = str(data.get("force_mode", "")).strip().lower()
             if mode in ("30s", "1m", "3m", "5m", "off"):
                 current["force_mode"] = mode
                 if engine:
