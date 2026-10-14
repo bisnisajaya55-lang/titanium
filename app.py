@@ -5725,7 +5725,31 @@ class QuantumMonitor:
                     
                     # Clear prediction so new mode starts fresh
                     self.state["prediction"] = None
-                    self._add_log(f"MODE SWITCH: {self.state['current_mode']} - Local Memory Synced.")
+                    
+                    # [v45 AUTO-SYNC MODE] — Reset paksa active_sig & filter
+                    _mode_code_map_v45 = {"30": "10005", "60": "10001", "180": "10002", "300": "10003"}
+                    _new_code_v45 = _mode_code_map_v45.get(str(mode_key), "10001")
+                    _date_v45 = datetime.now().strftime("%Y%m%d")
+                    self.state["active_sig"] = f"{_date_v45}{_new_code_v45}"
+                    self.state["active_p"] = None
+                    self.state["active_period"] = None
+                    self.state["currentPeriod"] = None
+                    self.state["target_period"] = None
+                    # Clear history kalau dari mode lama yang kosong
+                    if not dat.get("history"):
+                        self.state["history"] = []
+                        self.processed_p = set()
+                        self.brain.history_nums = []
+                        self.brain.history_bks = []
+                        # Trigger deep scan otomatis untuk mode baru
+                        try:
+                            import threading as _th_v45
+                            _th_v45.Thread(target=self._perform_deep_scan, args=(3,), daemon=True).start()
+                            self._add_log(f"🚀 [v45 MODE SWITCH] Mode baru terdeteksi → auto deep scan 3 halaman.")
+                        except: pass
+                    
+                    self.last_sync_time = time.time()  # Reset watchdog
+                    self._add_log(f"MODE SWITCH: {self.state['current_mode']} - Local Memory Synced + active_sig reset ke {self.state['active_sig']}")
                 
                 # PERSISTENCE GUARD: Re-activate prediction if it got lost but target is still relevant
                 if not self.state["prediction"] and self.state["history"]:
@@ -9543,6 +9567,330 @@ def member_stats_v1():
 @app.route('/api/admin/win_audit', methods=['GET'])
 def get_win_audit():
     return jsonify(engine.state.get("win_audit", []))
+
+
+# ============================================================
+# [v46] LEARNING AUDIT — Semua data pembelajaran otak dalam 1 JSON
+# Akses: /api/admin/learning_audit?key=OWNER_KEY
+# ============================================================
+# ============================================================
+# [v46] LEARNING AUDIT UI — Halaman dengan tombol copy 1-klik
+# Akses: /learning-audit?key=OWNER_KEY
+# ============================================================
+@app.route('/learning-audit')
+def learning_audit_page():
+    """[v46] Halaman UI untuk copy data pembelajaran otak."""
+    _key = request.args.get('key', '')
+    OWNER_KEY = _APP_SECRETS.get("OWNER_MASTER_KEY", "")
+    if _key != OWNER_KEY:
+        return "❌ Unauthorized. Pakai URL: /learning-audit?key=OWNER_KEY", 403
+    
+    return """<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Learning Audit — Titanium Omega</title>
+<style>
+    * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0d12; color: #fff; padding: 15px; min-height: 100vh; }
+    .container { max-width: 900px; margin: 0 auto; }
+    .header { text-align: center; margin-bottom: 20px; padding: 15px; background: linear-gradient(135deg, rgba(0,255,157,0.1), rgba(0,170,255,0.05)); border: 1px solid rgba(0,255,157,0.3); border-radius: 12px; }
+    h1 { font-size: 1.2rem; color: #00ff9d; letter-spacing: 2px; margin-bottom: 6px; }
+    .sub { font-size: 0.7rem; color: #666; letter-spacing: 1px; }
+    
+    .toolbar { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 15px; }
+    .btn { padding: 14px; border: none; border-radius: 10px; font-weight: 900; font-size: 0.75rem; cursor: pointer; letter-spacing: 1px; transition: 0.2s; text-align: center; }
+    .btn:active { transform: scale(0.97); }
+    .btn-green { background: #00ff9d; color: #000; }
+    .btn-blue { background: #00aaff; color: #fff; }
+    .btn-orange { background: #ffaa00; color: #000; }
+    
+    .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px; }
+    .stat-box { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 12px; text-align: center; }
+    .stat-label { font-size: 0.6rem; color: #666; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 4px; }
+    .stat-value { font-size: 1.3rem; font-weight: 900; color: #00ff9d; }
+    
+    .insights { background: rgba(0,170,255,0.05); border: 1px solid rgba(0,170,255,0.3); border-radius: 10px; padding: 12px; margin-bottom: 15px; }
+    .insights-title { font-size: 0.65rem; color: #00aaff; letter-spacing: 2px; font-weight: 900; margin-bottom: 8px; }
+    .insight-item { font-size: 0.75rem; color: #ccc; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.05); line-height: 1.4; }
+    .insight-item:last-child { border: none; }
+    
+    textarea { width: 100%; min-height: 400px; background: #000; border: 1px solid rgba(0,255,157,0.3); color: #00ff9d; font-family: 'Courier New', monospace; font-size: 0.7rem; padding: 15px; border-radius: 10px; resize: vertical; outline: none; line-height: 1.5; }
+    
+    .toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%) translateY(-100px); background: #00ff9d; color: #000; padding: 14px 28px; border-radius: 10px; font-weight: 900; font-size: 0.85rem; z-index: 9999; transition: 0.4s; box-shadow: 0 10px 40px rgba(0,255,157,0.5); }
+    .toast.show { transform: translateX(-50%) translateY(0); }
+    .toast.error { background: #ff4444; color: #fff; }
+</style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>🧠 LEARNING AUDIT</h1>
+        <div class="sub">Semua data pembelajaran otak dalam 1 halaman</div>
+    </div>
+    
+    <div class="toolbar">
+        <button class="btn btn-green" onclick="copyAll()">📋 SALIN 1-KLIK</button>
+        <button class="btn btn-blue" onclick="downloadTxt()">💾 DOWNLOAD</button>
+        <button class="btn btn-orange" onclick="refreshData()">🔄 REFRESH</button>
+    </div>
+    
+    <div class="stats" id="statsBox">
+        <div class="stat-box"><div class="stat-label">Total Feedback</div><div class="stat-value" id="stat-fb">-</div></div>
+        <div class="stat-box"><div class="stat-label">Avg Win Rate</div><div class="stat-value" id="stat-wr">-</div></div>
+        <div class="stat-box"><div class="stat-label">Q-Table States</div><div class="stat-value" id="stat-q">-</div></div>
+        <div class="stat-box"><div class="stat-label">Backtest Acc</div><div class="stat-value" id="stat-bt">-</div></div>
+    </div>
+    
+    <div class="insights" id="insightsBox">
+        <div class="insights-title">💡 INSIGHT OTOMATIS</div>
+        <div id="insightsList"><div class="insight-item">Memuat...</div></div>
+    </div>
+    
+    <textarea id="jsonArea" readonly placeholder="Memuat data..."></textarea>
+    
+    <div style="text-align:center; margin-top:15px; font-size:0.7rem; color:#555;">
+        Auto-refresh tiap 60 detik · Data akan terus tumbuh seiring bot belajar
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let _lastData = "";
+
+function showToast(msg, isError=false) {
+    const t = document.getElementById('toast');
+    t.innerText = msg;
+    t.className = 'toast show' + (isError ? ' error' : '');
+    setTimeout(() => t.className = 'toast', 2500);
+}
+
+async function refreshData() {
+    try {
+        const key = new URLSearchParams(window.location.search).get('key');
+        const r = await fetch('/api/admin/learning_audit?key=' + encodeURIComponent(key) + '&t=' + Date.now());
+        const d = await r.json();
+        
+        if (d.status !== 'ok') {
+            showToast('❌ Error: ' + (d.msg || 'unknown'), true);
+            return;
+        }
+        
+        // Update stats
+        if (d.summary) {
+            document.getElementById('stat-fb').innerText = d.summary.total_feedback || 0;
+            document.getElementById('stat-wr').innerText = (d.summary.avg_win_rate_pct || 0) + '%';
+            document.getElementById('stat-q').innerText = d.summary.q_table_states || 0;
+            document.getElementById('stat-bt').innerText = ((d.summary.backtest_accuracy || 0.5) * 100).toFixed(1) + '%';
+        }
+        
+        // Update insights
+        if (d.insights && d.insights.length) {
+            document.getElementById('insightsList').innerHTML = d.insights.map(i => 
+                `<div class="insight-item">${i}</div>`
+            ).join('');
+        }
+        
+        // Update JSON textarea
+        _lastData = JSON.stringify(d, null, 2);
+        document.getElementById('jsonArea').value = _lastData;
+    } catch(e) {
+        showToast('❌ Network error: ' + e.message, true);
+    }
+}
+
+function copyAll() {
+    if (!_lastData) { showToast('⏳ Data belum siap', true); return; }
+    const textarea = document.getElementById('jsonArea');
+    textarea.select();
+    textarea.setSelectionRange(0, 99999);
+    
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(_lastData).then(() => {
+            showToast('✅ Data tersalin! Paste ke chat');
+        }).catch(() => {
+            document.execCommand('copy');
+            showToast('✅ Data tersalin (fallback)');
+        });
+    } else {
+        document.execCommand('copy');
+        showToast('✅ Data tersalin!');
+    }
+}
+
+function downloadTxt() {
+    if (!_lastData) { showToast('⏳ Data belum siap', true); return; }
+    const blob = new Blob([_lastData], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    a.download = `learning_audit_${ts}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast('💾 File terdownload!');
+}
+
+// Auto-load
+refreshData();
+setInterval(refreshData, 60000);
+
+// Unlock audio context on first tap
+document.body.addEventListener('touchstart', function once() {
+    document.body.removeEventListener('touchstart', once);
+}, { once: true });
+</script>
+</body>
+</html>"""
+
+
+@app.route('/api/admin/learning_audit', methods=['GET'])
+def api_learning_audit():
+    """[v46] Return semua data pembelajaran otak: method scores, regime perf, Q-learning, adaptive thresholds."""
+    try:
+        from datetime import datetime as _dt_la
+        _q = getattr(engine.brain, "quantum", None) if engine and engine.brain else None
+        if not _q:
+            return jsonify({"status": "error", "msg": "QuantumBrain not available"}), 500
+        
+        # 1. Method scores (dari brain_learned)
+        _method_scores = {}
+        _total_wins = 0
+        _total_loses = 0
+        for _m, _d in getattr(_q, "method_scores", {}).items():
+            _w = _d.get("win", 0)
+            _l = _d.get("lose", 0)
+            _total = _w + _l
+            _wr = round(_w / _total * 100, 1) if _total > 0 else 0.0
+            _method_scores[_m] = {
+                "win": _w, "lose": _l, "total": _total,
+                "win_rate_pct": _wr, "weight": _d.get("weight", 1.0)
+            }
+            _total_wins += _w
+            _total_loses += _l
+        
+        # 2. Top / Bottom method
+        _sorted_methods = sorted(_method_scores.items(), key=lambda x: x[1]["weight"], reverse=True)
+        _top3 = [{"method": n, **d} for n, d in _sorted_methods[:3]]
+        _bottom3 = [{"method": n, **d} for n, d in _sorted_methods[-3:]]
+        
+        # 3. Regime performance (method mana jago di fase apa)
+        _regime_perf = {}
+        for _phase, _methods in getattr(_q, "regime_method_perf", {}).items():
+            _phase_summary = {}
+            for _m, _md in _methods.items():
+                _w = _md.get("win", 0)
+                _l = _md.get("lose", 0)
+                _t = _w + _l
+                if _t > 0:
+                    _phase_summary[_m] = {
+                        "win": _w, "lose": _l,
+                        "win_rate_pct": round(_w / _t * 100, 1)
+                    }
+            if _phase_summary:
+                _regime_perf[_phase] = _phase_summary
+        
+        # 4. Q-Learning summary
+        _q_table = getattr(_q, "q_table", {})
+        _q_total_states = len(_q_table)
+        # Cari top 5 state dengan Q-value tertinggi
+        _q_top_states = []
+        for _state, _actions in sorted(_q_table.items(), key=lambda x: max(x[1].get("B", 0), x[1].get("K", 0)), reverse=True)[:5]:
+            _q_top_states.append({
+                "state": _state,
+                "B_value": _actions.get("B", 0),
+                "K_value": _actions.get("K", 0),
+                "best_action": "B" if _actions.get("B", 0) > _actions.get("K", 0) else "K"
+            })
+        
+        # 5. Adaptive thresholds (auto-tuned)
+        _adaptive = getattr(_q, "adaptive_thresholds", {})
+        
+        # 6. Backtest cache
+        _backtest = getattr(_q, "backtest_cache", {"accuracy": 0.5, "samples": 0})
+        
+        # 7. Feedback counter
+        _feedback_counter = getattr(_q, "_feedback_counter", 0)
+        
+        # 8. Auto-generate insight
+        _insights = []
+        # Insight top method
+        if _top3:
+            _top = _top3[0]
+            _insights.append(f"🥇 Method TERBAIK: {_top['method']} (WR {_top['win_rate_pct']}%, weight {_top['weight']})")
+        # Insight bottom method
+        if _bottom3:
+            _bot = _bottom3[-1]
+            if _bot["total"] > 10 and _bot["win_rate_pct"] < 50:
+                _insights.append(f"⚠️ Method TERBURUK: {_bot['method']} (WR {_bot['win_rate_pct']}%, weight {_bot['weight']}) → sudah di-prune")
+        # Insight backtest
+        _bt_acc = _backtest.get("accuracy", 0.5)
+        if _bt_acc < 0.5:
+            _insights.append(f"📉 Backtest accuracy rendah ({_bt_acc}) → market RNG murni")
+        elif _bt_acc < 0.60:
+            _insights.append(f"📊 Backtest accuracy sedang ({_bt_acc}) → masih bisa improve")
+        else:
+            _insights.append(f"📈 Backtest accuracy bagus ({_bt_acc}) → ada pola terdeteksi")
+        # Insight Q-learning
+        if _q_total_states < 10:
+            _insights.append(f"🌱 Q-Learning baru mulai ({_q_total_states} state) → butuh lebih banyak feedback")
+        elif _q_total_states < 50:
+            _insights.append(f"🌿 Q-Learning berkembang ({_q_total_states} state)")
+        else:
+            _insights.append(f"🌳 Q-Learning matang ({_q_total_states} state)")
+        # Insight regime
+        if _regime_perf:
+            _best_regime = max(_regime_perf.items(), key=lambda x: len(x[1]))
+            _insights.append(f"🎯 Fase paling aktif: {_best_regime[0]} ({len(_best_regime[1])} method terdata)")
+        
+        # Insight total
+        _total_fb = _total_wins + _total_loses
+        _avg_wr = round(_total_wins / _total_fb * 100, 2) if _total_fb > 0 else 0.0
+        _insights.append(f"📊 Total feedback: {_total_fb} | Avg win rate: {_avg_wr}%")
+        
+        # Build response
+        _result = {
+            "status": "ok",
+            "timestamp": _dt_la.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "version": "v46-learning-audit",
+            
+            "summary": {
+                "total_feedback": _total_fb,
+                "avg_win_rate_pct": _avg_wr,
+                "feedback_counter": _feedback_counter,
+                "q_table_states": _q_total_states,
+                "backtest_accuracy": _backtest.get("accuracy", 0.5),
+                "backtest_samples": _backtest.get("samples", 0)
+            },
+            
+            "method_scores": _method_scores,
+            "top_3_methods": _top3,
+            "bottom_3_methods": _bottom3,
+            
+            "regime_performance": _regime_perf,
+            
+            "q_learning": {
+                "total_states": _q_total_states,
+                "top_5_states": _q_top_states
+            },
+            
+            "adaptive_thresholds": _adaptive,
+            
+            "insights": _insights
+        }
+        
+        return jsonify(_result)
+    except Exception as _e_la:
+        import traceback
+        return jsonify({
+            "status": "error",
+            "msg": str(_e_la),
+            "traceback": traceback.format_exc()
+        }), 500
 
 @app.route('/api/admin/slot_audit', methods=['GET'])
 def get_slot_audit():
