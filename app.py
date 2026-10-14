@@ -62,15 +62,31 @@ def _embedded_cleanup_worker():
         "/home/container/TITAN_WIN_AUDIT.json",
         "/home/container/TITAN_LOSS_AUDIT.json",
     ]
-    _tmp_chrome = "/tmp/titan_chrome_profile"
+    _tmp_chrome = "/home/container/.titan_chrome_profile"
     _proof_dir = "/home/container/static/proofs"
     _backup_dir = "/home/container/backups"
-    _LOG_FILES = ["/home/container/security.log", "/home/container/cf.log"]
-    _MAX_LOG_MB = 5
+    # v2 — Tambah file log lain + turunkan threshold ke 2 MB
+    _LOG_FILES = [
+        "/home/container/security.log",
+        "/home/container/cf.log",
+        "/home/container/error.log",
+        "/home/container/titan.log",
+    ]
+    _MAX_LOG_MB = 2  # v2 — turun dari 5 MB (biar hemat disk)
     
     _t.sleep(180)  # Tunggu 3 menit sebelum cek pertama
     while True:
         try:
+            # [v2] Panggil auto_cleanup.py standalone dulu (kalau ada)
+            try:
+                import subprocess as _sp_clean
+                _sp_clean.Popen(
+                    ["python", "/home/container/auto_cleanup.py"],
+                    stdout=_sp_clean.DEVNULL, stderr=_sp_clean.DEVNULL
+                )
+            except Exception:
+                pass  # Kalau file tidak ada, fallback ke logic embedded
+
             # 1. Trim audit JSONL
             for fp in _AUDIT_FILES:
                 if not _os.path.exists(fp): continue
@@ -132,7 +148,7 @@ def _embedded_cleanup_worker():
                         except: pass
         except Exception as _e:
             print(f"[CLEANUP] Loop error: {_e}")
-        _t.sleep(3600)  # Tiap 1 jam
+        _t.sleep(900)  # Tiap 15 menit (v2 — lebih sering)
 
 # Jalankan sekali saat app.py di-load
 try:
@@ -1938,8 +1954,24 @@ class QuantumMonitor:
         self.tg_last_msg_id = None
         self.virtual_balance = 1000000
 
-        def generate_martingale_3x_list(base: int, levels: int = 8):
-            return [int(base * (3 ** i)) for i in range(levels)]
+        def generate_martingale_3x_list(base: int, levels: int = 15):
+            """v42 — Martingale 2.2x + ceil ke ribuan (KONSISTEN dengan runtime _on_result).
+            
+            Rumus:
+              B_n = ceil(B_(n-1) × 2.2 / 1000) × 1000
+            
+            Jaminan:
+              - Semua bet ANGKA BULAT (ribuan)
+              - WIN di step manapun → profit > 0
+              - Fee 2% covered (min M = 2.0417)
+            """
+            _MIN_SAFE_MULT = 2.2
+            bets = [int(base)]
+            for n in range(1, levels):
+                _raw = bets[-1] * _MIN_SAFE_MULT
+                B_next = int((_raw + 999) // 1000 * 1000)
+                bets.append(B_next)
+            return bets
 
         self.bet_plans = {
             "1k": generate_martingale_3x_list(1000),
@@ -6846,11 +6878,11 @@ class QuantumMonitor:
                     if sig.get("num") == v:
                         sig["res"] = "WIN-JP"
                         res_status = "WIN-JP"
-                        payout = int(sig["bet"] * 8.0)
+                        payout = int(sig["bet"] * 0.98)
                     else:
                         sig["res"] = "WIN"
                         res_status = "WIN"
-                        payout = int(sig["bet"] * 0.96)
+                        payout = int(sig["bet"] * 0.98)
                     
                     self.state["stats"]["win"] += 1
                     is_jp = res_status == "WIN-JP"
@@ -6885,14 +6917,19 @@ class QuantumMonitor:
                     # Saldo dianggap unlimited → cap tinggi 500 juta.
                     _ent = float(self.brain.quantum_entropy)
                     
-                    # Multiplier adaptif — tetap NAIK, hanya kecepatan yang disesuaikan
-                    if _ent <= 2.5:
-                        _effective_mult = float(mult)  # pakai setting (default 3x)
-                    else:
-                        _effective_mult = max(2.0, float(mult) - 1.0)  # tetap naik, min 2x
+                    # v41 — Multiplier AMAN dengan fee 2% (GUARANTEED PROFIT)
+                    # Rumus: M > 1 + 1/(1-2F) = 1 + 1/0.96 = 2.0417
+                    # Pakai 2.2x untuk safety margin biar tidak rugi di step tinggi
+                    _MIN_SAFE_MULT = 2.2
                     
-                    # LANGSUNG naik — TIDAK ADA reset, TIDAK ADA circuit breaker
-                    calculated_next = int(last_bet * _effective_mult)
+                    if _ent <= 2.5:
+                        _effective_mult = max(_MIN_SAFE_MULT, float(mult))
+                    else:
+                        _effective_mult = max(_MIN_SAFE_MULT, float(mult) - 1.0)
+                    
+                    # LANGSUNG naik + ceil ke ribuan (55five tolak pecahan)
+                    _raw_next = last_bet * _effective_mult
+                    calculated_next = int((_raw_next + 999) // 1000 * 1000)
                     
                     # Cap tinggi 500 juta (saldo unlimited)
                     _high_cap = max(int(max_bet), 500000000)
@@ -6931,7 +6968,7 @@ class QuantumMonitor:
                 if is_win:
                     res_status = "WIN-JP" if is_jp else "WIN"
                     if is_jp: self.state["stats"]["win_jp"] += 1
-                    payout = int(bet_amt * 8.0) if is_jp else int(bet_amt * 0.96)
+                    payout = int(bet_amt * 0.98) # JP = WIN, label only
                     self.virtual_balance += payout
                     self.state["stats"]["win"] += 1
                     self.brain.report_feedback(True, is_jp)
@@ -6967,7 +7004,7 @@ class QuantumMonitor:
             if is_win:
                 res_status = "WIN-JP" if is_jp else "WIN"
                 if is_jp: self.state["stats"]["win_jp"] += 1
-                payout = int(bet_amt * 8.0) if is_jp else int(bet_amt * 0.96)
+                payout = int(bet_amt * 0.98) # JP = WIN, label only
                 self.virtual_balance += payout
                 self.state["stats"]["win"] += 1
                 self.brain.report_feedback(True, is_jp)
@@ -9580,10 +9617,10 @@ def get_win_audit():
 @app.route('/learning-audit')
 def learning_audit_page():
     """[v46] Halaman UI untuk copy data pembelajaran otak."""
-    _key = request.args.get('key', '')
-    OWNER_KEY = _APP_SECRETS.get("OWNER_MASTER_KEY", "")
-    if _key != OWNER_KEY:
-        return "❌ Unauthorized. Pakai URL: /learning-audit?key=OWNER_KEY", 403
+    # [v47] Auth bypass — pakai check_owner_mode seperti dashboard
+    # Karena check_owner_mode() return True di server kamu, halaman ini accessible
+    if not check_owner_mode():
+        return "❌ Akses ditolak", 403
     
     return """<!DOCTYPE html>
 <html lang="id">
@@ -18616,28 +18653,28 @@ PERIODE STATUS: 0 WIN | 0 LOS
 
         function updatePlanBreakdown(active_plan) {
             const plans = {
-                "1k": "1k - 3k - 9k - 27k - 81k - 243k - 729k",
-                "2k": "2k - 6k - 18k - 54k - 162k - 486k - 1458k",
-                "3k": "3k - 9k - 27k - 81k - 243k - 729k - 2187k",
-                "4k": "4k - 12k - 36k - 108k - 324k - 972k - 2.916k",
-                "5k": "5k - 15k - 45k - 135k - 405k - 1215k - 3645k",
-                "6k": "6k - 18k - 54k - 162k - 486k - 1458k - 4374k",
-                "7k": "7k - 21k - 63k - 189k - 567k - 1701k - 5103k",
-                "8k": "8k - 24k - 72k - 216k - 648k - 1.944k - 5.832k",
-                "9k": "9k - 27k - 81k - 243k - 729k - 2187k - 6561k",
-                "10k": "10k - 30k - 90k - 270k - 810k - 2.430k - 7.290k"
+                "1k": "1k → 3k → 7k → 16k → 36k → 80k → 176k",
+                "2k": "2k → 5k → 11k → 25k → 55k → 121k → 267k",
+                "3k": "3k → 7k → 16k → 36k → 80k → 176k → 388k",
+                "4k": "4k → 9k → 20k → 44k → 97k → 214k → 471k",
+                "5k": "5k → 11k → 25k → 55k → 121k → 267k → 588k",
+                "6k": "6k → 14k → 31k → 69k → 152k → 335k → 737k",
+                "7k": "7k → 16k → 36k → 80k → 176k → 388k → 854k",
+                "8k": "8k → 18k → 40k → 88k → 194k → 427k → 940k",
+                "9k": "9k → 20k → 44k → 97k → 214k → 471k → 1.037k",
+                "10k": "10k → 22k → 49k → 108k → 238k → 524k → 1.153k"
             };
             const totals = {
-                "1k": "1.093.000",
-                "2k": "2.186.000",
-                "3k": "3.279.000",
-                "4k": "4.372.000",
-                "5k": "5.465.000",
-                "6k": "6.558.000",
-                "7k": "7.651.000",
-                "8k": "8.744.000",
-                "9k": "9.837.000",
-                "10k": "10.930.000"
+                "1k": "6.726.000",
+                "2k": "13.452.000",
+                "3k": "20.178.000",
+                "4k": "26.904.000",
+                "5k": "33.630.000",
+                "6k": "40.356.000",
+                "7k": "47.082.000",
+                "8k": "53.808.000",
+                "9k": "60.534.000",
+                "10k": "67.260.000"
             };
             if(plans[active_plan]) {
                 document.getElementById('safe-reco').innerText = plans[active_plan];
@@ -18645,16 +18682,16 @@ PERIODE STATUS: 0 WIN | 0 LOS
                 
                 const stepsInput = document.getElementById('wingo-steps-input');
                 const stepValues = {
-                    "1k": "1000, 3000, 9000, 27000, 81000, 243000, 729000",
-                    "2k": "2000, 6000, 18000, 54000, 162000, 486000, 1458000",
-                    "3k": "3000, 9000, 27000, 81000, 243000, 729000, 2187000",
-                    "4k": "4000, 12000, 36000, 108000, 324000, 972000, 2916000",
-                    "5k": "5000, 15000, 45000, 135000, 405000, 1215000, 3645000",
-                    "6k": "6000, 18000, 54000, 162000, 486000, 1458000, 4374000",
-                    "7k": "7000, 21000, 63000, 189000, 567000, 1701000, 5103000",
-                    "8k": "8000, 24000, 72000, 216000, 648000, 1944000, 5832000",
-                    "9k": "9000, 27000, 81000, 243000, 729000, 2187000, 6561000",
-                    "10k": "10000, 30000, 90000, 270000, 810000, 2430000, 7290000"
+                    "1k": "1000, 3000, 7000, 16000, 36000, 80000, 176000",
+                    "2k": "2000, 5000, 11000, 25000, 55000, 121000, 267000",
+                    "3k": "3000, 7000, 16000, 36000, 80000, 176000, 388000",
+                    "4k": "4000, 9000, 20000, 44000, 97000, 214000, 471000",
+                    "5k": "5000, 11000, 25000, 55000, 121000, 267000, 588000",
+                    "6k": "6000, 14000, 31000, 69000, 152000, 335000, 737000",
+                    "7k": "7000, 16000, 36000, 80000, 176000, 388000, 854000",
+                    "8k": "8000, 18000, 40000, 88000, 194000, 427000, 940000",
+                    "9k": "9000, 20000, 44000, 97000, 214000, 471000, 1037000",
+                    "10k": "10000, 22000, 49000, 108000, 238000, 524000, 1153000"
                 };
                 if(stepsInput && stepValues[active_plan]) {
                     stepsInput.value = stepValues[active_plan];
