@@ -6216,9 +6216,54 @@ class QuantumMonitor:
                         self._add_log(f"⚠️ [WATCHDOG L2] Error: {_wd2_e}")
                         self.last_sync_time = time.time()  # Reset to avoid loop
                 
+                # [v44] WATCHDOG STUCK FIX — kalau history kosong > 2 menit, force repair
+                _stuck_v44 = time.time() - getattr(self, "last_sync_time", time.time())
+                if len(self.state.get("history", [])) == 0 and _stuck_v44 > 120:
+                    self._add_log(f"🚨 [v44 STUCK FIX] Sync stuck {int(_stuck_v44)}s. Force repair!")
+                    try:
+                        self.processed_p = set()
+                        self.state["active_p"] = None
+                        self.state["prediction"] = None
+                        self.state["active_period"] = None
+                        _sig_v44 = datetime.now().strftime("%Y%m%d") + "10001"
+                        self.state["active_sig"] = _sig_v44
+                        self.state["mode_raw"] = "60"
+                        self.state["current_mode"] = "MODE: 1 MIN"
+                        _base_v44 = "https://www.nuxpira.com"
+                        try:
+                            _u_v44 = self.driver.current_url
+                            if "/#/" in _u_v44:
+                                _base_v44 = _u_v44.split("/#/")[0]
+                        except: pass
+                        with self.lock:
+                            self.driver.get(f"{_base_v44}/#/home/AllLotteryGames/WinGo?id=1")
+                        time.sleep(4)
+                        try:
+                            with self.lock:
+                                self.driver.execute_script("""
+                                    (function(){
+                                        var targets = ["1m","1 min","1menit","1 menit"];
+                                        var all = document.querySelectorAll('.van-tab, [role="tab"]');
+                                        for (var k=0;k<all.length;k++){
+                                            var t = (all[k].innerText||'').toLowerCase();
+                                            if (t.length > 25) continue;
+                                            for (var m=0;m<targets.length;m++){
+                                                if (t.indexOf(targets[m]) > -1){
+                                                    try{ all[k].click(); }catch(e){}
+                                                    try{ all[k].dispatchEvent(new MouseEvent('click', {bubbles:true})); }catch(e){}
+                                                }
+                                            }
+                                        }
+                                    })();
+                                """)
+                        except: pass
+                        self.last_sync_time = time.time()
+                        self._add_log(f"✅ [v44 STUCK FIX] Repair done. sig={_sig_v44}")
+                    except Exception as _e44:
+                        self._add_log(f"⚠️ [v44] Repair error: {_e44}")
+                        self.last_sync_time = time.time()
+                
                 if len(self.state["history"]) >= 1:
-                    self.state["status"] = "CONNECTED (SYNCED 24/7)"
-                    
                     self.state["status"] = "CONNECTED (SYNCED 24/7)"
                     force_by_timer = False
                     _predict_called_this_loop = False
@@ -11249,6 +11294,16 @@ def start_engine():
     engine.processed_p = set()
     engine.last_observed_timer = ""
     engine.last_timer_change_time = time.time()
+    
+    # [v44 FIX] Force reset active_sig agar tidak ada filter stale dari sesi lama
+    try:
+        from datetime import datetime as _dt_v44
+        engine.state["active_sig"] = _dt_v44.now().strftime("%Y%m%d") + "10001"
+        engine.state["history"] = []
+        engine.state["active_p"] = None
+        engine.state["prediction"] = None
+        print(f"[v44] Forced active_sig → {engine.state['active_sig']} (mode 1m)")
+    except: pass
     engine._add_log("🔄 [WORKFLOW] State di-reset. Alur: Login via Helper → Pilih Mode (30s/1m/3m/5m).")
     
     engine.is_running = True
