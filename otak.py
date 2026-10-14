@@ -2011,9 +2011,10 @@ class QuantumBrain:
             _last_side_choppy = "B" if history_nums[-1] >= 5 else "K"
             final_side_key = _last_side_choppy
             final_side = "BESAR" if final_side_key == "B" else "KECIL"
-            # Paksa confidence rendah di choppy
-            confidence = min(confidence, 55.0)
-            self._log(f"[v42 CHOPPY GUARD] D:1 Z:1 detected → momentum follow '{final_side}' (confidence forced low).")
+            # [v44 FIX] Hapus confidence line — belum didefinisikan di sini.
+            # Set flag untuk dipakai nanti setelah confidence dihitung.
+            self._choppy_mode_active = True
+            self._log(f"[v42 CHOPPY GUARD] D:1 Z:1 detected → momentum follow '{final_side}' (choppy flag active).")
             # JP number ikut side
             if final_side_key == "B" and target_jp_num < 5:
                 target_jp_num = 7
@@ -2266,6 +2267,11 @@ class QuantumBrain:
             confidence *= 0.85
         if self.loss_counter >= 4:
             confidence *= 0.75
+        
+        # [v44 CHOPPY CAP] — apply di akhir setelah semua penalty
+        if getattr(self, "_choppy_mode_active", False):
+            confidence = min(confidence, 55.0)
+            self._choppy_mode_active = False  # Reset flag setelah dipakai
 
         # Final results were already calculated via 50-iteration Neural Consensus loop
         self.num_history.append(target_jp_num)
