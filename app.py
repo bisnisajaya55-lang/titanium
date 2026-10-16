@@ -4901,7 +4901,64 @@ class QuantumMonitor:
                 self._add_log(f"MONITOR HEARTBEAT FAULT: {str(e)}")
                 time.sleep(3)
         self._loop_active = False
+    def _session_keep_alive(self):
+        """v43 — Kirim micro-activity ke 55five agar session tidak logout.
+        Dipanggil tiap 5 menit dari monitor loop.
+        """
+        if not self.driver:
+            return False
+        try:
+            now_ka = time.time()
+            last_ka = getattr(self, "_last_keepalive", 0)
+            if now_ka - last_ka < 300:  # tiap 5 menit
+                return True
+            self._last_keepalive = now_ka
 
+            with self.lock:
+                # Cek apakah masih di halaman 55five (bukan login)
+                _cur_url = (self.driver.current_url or "").lower()
+                if "/login" in _cur_url or "/register" in _cur_url:
+                    return False  # sudah logout, tidak bisa keep-alive
+
+                # Kirim pulse aktivitas via JS
+                _ka_result = self.driver.execute_script("""
+                    (function() {
+                        try {
+                            // 1. Dispatch mouse move
+                            document.dispatchEvent(new MouseEvent('mousemove', {
+                                bubbles: true, cancelable: true, view: window,
+                                clientX: Math.floor(Math.random() * 500) + 100,
+                                clientY: Math.floor(Math.random() * 400) + 100
+                            }));
+                            
+                            // 2. Scroll pulse kecil (1px, langsung restore)
+                            var _origY = window.pageYOffset || 0;
+                            window.scrollBy(0, 1);
+                            setTimeout(function(){ window.scrollTo(0, _origY); }, 50);
+                            
+                            // 3. Trigger visibility API (bikin tab dianggap aktif)
+                            document.dispatchEvent(new Event('visibilitychange'));
+                            
+                            // 4. Micro-focus activity
+                            if (document.body) {
+                                document.body.dispatchEvent(new Event('focus', {bubbles: true}));
+                            }
+                            
+                            return { success: true, ts: Date.now() };
+                        } catch(e) {
+                            return { success: false, error: e.toString() };
+                        }
+                    })();
+                """)
+
+                if _ka_result and _ka_result.get("success"):
+                    self._add_log(f"💓 [v43 KEEP-ALIVE] Session pulse terkirim (cek server)")
+                else:
+                    self._add_log(f"⚠️ [v43 KEEP-ALIVE] Pulse gagal: {_ka_result}")
+                return True
+        except Exception as _ka_e:
+            self._add_log(f"⚠️ [v43 KEEP-ALIVE] Error: {_ka_e}")
+            return False
     def _execute_monitor_loop(self):
         try:
             while not self.driver: 
@@ -5500,22 +5557,44 @@ class QuantumMonitor:
                 # 0. DETECT ACTIVE MODE FROM URL
                 
                 if "/login" in url:
-                    # [PHASE 1a SAFE] Kalau login page muncul = session expired
                     self.state["status"] = "LOGIN REQUIRED"
                     self.state["session_status"] = "expired"
-                    self._was_on_login_page = True  # [AUTO-NAV] Marker login state
-                    # Kalau URL stuck di login > 2 menit, coba refresh 1x
-                    _login_stuck_since = getattr(self, "_login_stuck_since", 0)
-                    if _login_stuck_since == 0:
-                        self._login_stuck_since = time.time()
-                    elif time.time() - _login_stuck_since > 120:
-                        self._add_log("🔄 [RECOVERY] Login page stuck >2 menit. Refresh...")
-                        try:
-                            with self.lock:
-                                self.driver.refresh()
-                            self._login_stuck_since = time.time()
-                        except: pass
-                    time.sleep(5); continue
+                    self._was_on_login_page = True
+                    
+                    # [v43 AUTO-REL0GIN] Coba auto-login kalau kredensial tersedia
+                    _relogin_attempts = getattr(self, "_relogin_attempts", 0)
+                    _last_relogin = getattr(self, "_last_relogin_try", 0)
+                    
+                    if time.time() - _last_relogin > 60:  # Coba tiap 60 detik
+                        self._last_relogin_try = time.time()
+                        self._relogin_attempts = _relogin_attempts + 1
+                        
+                        _creds = _load_55five_creds()
+                        if _creds.get("enabled") and _creds.get("username") and _creds.get("password"):
+                            self._add_log(f"🔐 [v43 AUTO-REL0GIN] Attempt #{self._relogin_attempts}: Login ulang...")
+                            try:
+                                ok, msg = self.login_automatic(_creds["username"], _creds["password"])
+                                if ok:
+                                    self._add_log(f"✅ [v43 AUTO-REL0GIN] BERHASIL! {msg}")
+                                    self._relogin_attempts = 0
+                                    # Navigate ke mode target
+                                    _fm_relogin = _load_owner_settings_local().get("force_mode", "1m")
+                                    _mid_relogin = {"30s": "0", "1m": "1", "3m": "3", "5m": "5"}.get(_fm_relogin, "1")
+                                    with self.lock:
+                                        self.driver.get(f"https://www.nuxpira.com/#/home/AllLotteryGames/WinGo?id={_mid_relogin}")
+                                    time.sleep(3)
+                                    self._add_log(f"🎯 [v43 AUTO-REL0GIN] Navigate ke mode {_fm_relogin}")
+                                    continue
+                                else:
+                                    self._add_log(f"⚠️ [v43 AUTO-REL0GIN] Gagal: {msg}")
+                            except Exception as _rl_e:
+                                self._add_log(f"⚠️ [v43 AUTO-REL0GIN] Error: {_rl_e}")
+                        else:
+                            if self._relogin_attempts == 1:
+                                self._add_log("⚠️ [v43 AUTO-REL0GIN] Kredensial tidak tersedia. Isi di dashboard → System Config.")
+                    
+                    time.sleep(5)
+                    continue
                 else:
                     # Reset stuck timer kalau sudah lewat login
                     self._login_stuck_since = 0
@@ -5576,6 +5655,9 @@ class QuantumMonitor:
                 except: pass
                 self.state["timer"] = timer_text
 
+                # v43 — Session keep-alive (tiap 5 menit)
+                self._session_keep_alive()
+                
                 # --- AUTO-SCROLL ANTI-STUCK ENGINE (24/7 BROWSER KEEP-ALIVE v41) ---
                 # v41: interval diturunkan 90 → 45 detik untuk keep-alive lebih responsif
                 now_scroll = time.time()
@@ -8554,7 +8636,19 @@ def get_my_hwid():
 _55FIVE_CRED_FILE = "/home/container/.titan_session_marker"  # marker, bukan credential
 
 def _load_55five_creds():
-    # [PHASE 1a SAFE] Hanya cek marker, tidak ada kredensial
+    """[v43] Load kredensial dari file (untuk auto-relogin)."""
+    try:
+        import json as _j_creds
+        if os.path.exists(_55FIVE_CRED_FILE):
+            with open(_55FIVE_CRED_FILE, "r") as _f_creds:
+                _data = _j_creds.load(_f_creds)
+                return {
+                    "enabled": bool(_data.get("enabled", False)),
+                    "username": str(_data.get("username", "")).strip(),
+                    "password": str(_data.get("password", "")).strip(),
+                }
+    except Exception as _e_creds:
+        print(f"[CREDS] Load error: {_e_creds}")
     return {"enabled": False, "username": "", "password": ""}
 
 def _save_55five_creds(data):
@@ -17769,7 +17863,7 @@ PERIODE STATUS: 0 WIN | 0 LOS
                     </div>
                 </div>
 
-                <div class="control-card" style="border-color: #a855f7; display:none;">
+                <div class="control-card" style="border-color: #a855f7;">
                     <h2>🔐 AUTO-LOGIN 55FIVE (RECOVERY)</h2>
                     <div style="font-size: 0.6rem; color: #888; margin-bottom: 10px; line-height: 1.4;">
                         Simpan kredensial 55five di sini. Kalau server logout tiba-tiba, sistem akan login sendiri + navigate ke mode yang dipilih. <b style="color:#a855f7;">Tanpa notifikasi Telegram.</b>
